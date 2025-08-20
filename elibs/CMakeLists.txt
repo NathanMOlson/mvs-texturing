@@ -11,7 +11,7 @@ externalproject_add(ext_mapmap
 
 externalproject_add(ext_rayint
     PREFIX          ext_rayint
-    GIT_REPOSITORY  https://github.com/pierotofy/rayint.git
+    GIT_REPOSITORY  https://github.com/nmoehrle/rayint.git
     GIT_TAG         cuda
     UPDATE_COMMAND  ""
     SOURCE_DIR      ${CMAKE_SOURCE_DIR}/elibs/rayint
@@ -27,5 +27,16 @@ externalproject_add(ext_eigen
     SOURCE_DIR      ${CMAKE_SOURCE_DIR}/elibs/eigen
     CONFIGURE_COMMAND ""
     BUILD_COMMAND   ""
+    INSTALL_COMMAND ""
+)
+
+externalproject_add(ext_mve	
+    PREFIX          ext_mve
+    GIT_REPOSITORY  https://github.com/OpenDroneMap/mve.git
+    GIT_TAG         356
+    UPDATE_COMMAND  ""
+    SOURCE_DIR      ${CMAKE_SOURCE_DIR}/elibs/mve
+    CONFIGURE_COMMAND ""
+    BUILD_IN_SOURCE 1
     INSTALL_COMMAND ""
 )
