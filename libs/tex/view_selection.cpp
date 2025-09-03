@@ -16,12 +16,12 @@
 TEX_NAMESPACE_BEGIN
 
 void
-view_selection(DataCosts const & data_costs, UniGraph * graph, Settings const &) {
+view_selection(DataCosts const & data_costs, UniGraph * graph, const std::vector<float>& cost_table, Settings const &) {
     using uint_t = unsigned int;
     using cost_t = float;
-    constexpr uint_t simd_w = mapmap::sys_max_simd_width<cost_t>();
+    constexpr uint_t simd_w = 1;
     using unary_t = mapmap::UnaryTable<cost_t, simd_w>;
-    using pairwise_t = mapmap::PairwisePotts<cost_t, simd_w>;
+    using pairwise_t = mapmap::PairwiseTable<cost_t, simd_w>;
 
     /* Construct graph */
     mapmap::Graph<cost_t> mgraph(graph->num_nodes());
@@ -61,7 +61,16 @@ view_selection(DataCosts const & data_costs, UniGraph * graph, Settings const &)
 
     std::vector<unary_t> unaries;
     unaries.reserve(data_costs.cols());
-    pairwise_t pairwise(1.0f);
+
+    mapmap::LabelSet<cost_t, simd_w> table_label_set(1, false);
+    std::vector<mapmap::_iv_st<cost_t, simd_w> > labels;
+    size_t num_views = 17;
+    for(size_t i = 0; i < num_views; i++) {
+        labels.push_back(i+1);
+    }
+    table_label_set.set_label_set_for_node(0, labels);
+    pairwise_t pairwise(0, 0, &table_label_set, cost_table);
+
     for (std::size_t i = 0; i < data_costs.cols(); ++i) {
         DataCosts::Column const & data_costs_for_node = data_costs.col(i);
 

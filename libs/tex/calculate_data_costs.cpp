@@ -209,7 +209,7 @@ calculate_face_projection_infos(mve::TriangleMesh::ConstPtr mesh,
                     if (viewing_angle < 0.0f || viewing_direction.dot(view_to_face_vec) < 0.0f)
                         continue;
 
-                    if (std::acos(viewing_angle) > MATH_DEG2RAD(settings.nadir_mode ? 90.0f : 75.0f))
+                    if (std::acos(viewing_angle) > MATH_DEG2RAD(settings.nadir_mode ? 90.0f : 90.0f))
                         continue;
                 }
 
@@ -251,6 +251,9 @@ calculate_face_projection_infos(mve::TriangleMesh::ConstPtr mesh,
                 }else{
                     texture_view->get_face_info<uint8_t>(v1, v2, v3, &info, settings);
                 }
+
+                // float a = 0.5;
+                // info.quality = a * info.mean_color[0] + (1.F - a) * info.quality;
 
                 if (info.quality == 0.0) continue;
 

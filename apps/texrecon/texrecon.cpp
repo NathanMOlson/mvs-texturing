@@ -113,8 +113,17 @@ int main(int argc, char **argv) {
         }
         timer.measure("Calculating data costs");
 
+        size_t n_views = texture_views.size();
+        std::vector<float> pairwise_cost(n_views * n_views, 0);
+        for(size_t i = 0; i < n_views; i++) {
+            for(size_t j = i + 1; j < n_views; j++) {
+                pairwise_cost[i * n_views + j] = (texture_views[i].get_pos() - texture_views[j].get_pos()).norm()*1.0e-3;
+                pairwise_cost[j * n_views + i] = pairwise_cost[i * n_views + j];
+            }
+        }
+
         try {
-            tex::view_selection(data_costs, &graph, conf.settings);
+            tex::view_selection(data_costs, &graph, pairwise_cost, conf.settings);
         } catch (std::runtime_error& e) {
             std::cerr << "\tOptimization failed: " << e.what() << std::endl;
             std::exit(EXIT_FAILURE);
