@@ -12,12 +12,15 @@
 #include <vector>
 #include <tbb/task_arena.h>
 #include <omp.h>
+#include <set>
 
 #include <util/timer.h>
 #include <util/system.h>
 #include <util/file_system.h>
 #include <mve/mesh_io_ply.h>
 #include <opencv2/imgcodecs.hpp>
+#include <Eigen/SparseCore>
+#include <Eigen/IterativeLinearSolvers>
 
 #include "tex/util.h"
 #include "tex/timer.h"
@@ -26,6 +29,9 @@
 #include "tex/progress_counter.h"
 
 #include "arguments.h"
+
+typedef Eigen::SparseMatrix<float> SpMat;
+typedef Eigen::Triplet<float, int> SpCoeff;
 
 cv::Mat view_selection(tex::DataCosts const &data_costs,
                        const QuadMesh &mesh,
@@ -40,17 +46,17 @@ cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, 
     {
         for (int j = 0; j < labels.cols; j++)
         {
-            int index = i*labels.cols + j;
+            int index = i * labels.cols + j;
             float q = 0;
             uint16_t num_valid = 0;
-            
-            for (const QuadInfo& quad_info : quad_infos[index])
+
+            for (const QuadInfo &quad_info : quad_infos[index])
             {
                 if (quad_info.num_valid_pixels > num_valid || (quad_info.num_valid_pixels == num_valid && quad_info.quality > q))
                 {
                     q = quad_info.quality;
                     num_valid = quad_info.num_valid_pixels;
-                    labels.at<uint16_t>(i,j) = quad_info.view_id + 1;
+                    labels.at<uint16_t>(i, j) = quad_info.view_id + 1;
                 }
             }
         }
@@ -58,10 +64,356 @@ cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, 
     return labels;
 }
 
-cv::Mat create_mosaic(std::vector<ImageView> &image_views, const QuadMesh &mesh, const cv::Mat &labels)
+float calculate_difference(const std::vector<std::vector<QuadInfo>> &quad_infos, cv::Size mesh_size, int row, int col, uint16_t label, uint16_t label2)
 {
-    constexpr size_t tile_size = 32;
-    cv::Mat mosaic = cv::Mat::zeros(labels.rows * tile_size, labels.cols * tile_size, CV_16U);
+    int n1 = 0;
+    int n2 = 0;
+    float m1 = 0;
+    float m2 = 0;
+
+    if (row > 0 && col > 0)
+    {
+        int index = (row - 1) * mesh_size.width + col - 1;
+        for (const QuadInfo &quad_info : quad_infos[index])
+        {
+            if (quad_info.view_id == label - 1)
+            {
+                m1 += quad_info.br;
+                n1++;
+            }
+            else if (quad_info.view_id == label2 - 1)
+            {
+                m2 += quad_info.br;
+                n2++;
+            }
+        }
+    }
+
+    if (row > 0 && col < mesh_size.width)
+    {
+        int index = (row - 1) * mesh_size.width + col;
+        for (const QuadInfo &quad_info : quad_infos[index])
+        {
+            if (quad_info.view_id == label - 1)
+            {
+                m1 += quad_info.bl;
+                n1++;
+            }
+            else if (quad_info.view_id == label2 - 1)
+            {
+                m2 += quad_info.bl;
+                n2++;
+            }
+        }
+    }
+
+    if (row < mesh_size.height && col > 0)
+    {
+        int index = (row)*mesh_size.width + col - 1;
+        for (const QuadInfo &quad_info : quad_infos[index])
+        {
+            if (quad_info.view_id == label - 1)
+            {
+                m1 += quad_info.tr;
+                n1++;
+            }
+            else if (quad_info.view_id == label2 - 1)
+            {
+                m2 += quad_info.tr;
+                n2++;
+            }
+        }
+    }
+
+    if (row < mesh_size.height && col < mesh_size.width)
+    {
+        int index = row * mesh_size.width + col;
+        for (const QuadInfo &quad_info : quad_infos[index])
+        {
+            if (quad_info.view_id == label - 1)
+            {
+                m1 += quad_info.tl;
+                n1++;
+            }
+            else if (quad_info.view_id == label2 - 1)
+            {
+                m2 += quad_info.tl;
+                n2++;
+            }
+        }
+    }
+    assert(n1 > 0 && n2 > 0);
+
+    return m2 / n2 - m1 / n1;
+}
+
+cv::Mat global_seam_leveling(const cv::Mat &labels, const std::vector<std::vector<QuadInfo>> &quad_infos)
+{
+    cv::Mat index_image = -cv::Mat::ones(labels.rows * 2, labels.cols * 2, CV_32S);
+    int next_index = 0;
+    for (int i = 0; i < labels.rows; i++)
+    {
+        for (int j = 0; j < labels.cols; j++)
+        {
+            if (labels.at<uint16_t>(i, j) == 0)
+            {
+                continue;
+            }
+
+            // Top Left
+            if (i > 0 && j > 0 && labels.at<uint16_t>(i, j) == labels.at<uint16_t>(i - 1, j - 1))
+            {
+                index_image.at<int32_t>(2 * i, 2 * j) = index_image.at<int32_t>(2 * i - 1, 2 * j - 1);
+            }
+            else if (i > 0 && labels.at<uint16_t>(i, j) == labels.at<uint16_t>(i - 1, j))
+            {
+                index_image.at<int32_t>(2 * i, 2 * j) = index_image.at<int32_t>(2 * i - 1, 2 * j);
+            }
+            else if (j > 0 && labels.at<uint16_t>(i, j) == labels.at<uint16_t>(i, j - 1))
+            {
+                index_image.at<int32_t>(2 * i, 2 * j) = index_image.at<int32_t>(2 * i, 2 * j - 1);
+            }
+            else
+            {
+                index_image.at<int32_t>(2 * i, 2 * j) = next_index;
+                next_index++;
+            }
+
+            // Top Right
+            if (i > 0 && labels.at<uint16_t>(i, j) == labels.at<uint16_t>(i - 1, j))
+            {
+                index_image.at<int32_t>(2 * i, 2 * j + 1) = index_image.at<int32_t>(2 * i - 1, 2 * j + 1);
+            }
+            else if (i > 0 && j < labels.cols - 1 && labels.at<uint16_t>(i, j) == labels.at<uint16_t>(i - 1, j + 1))
+            {
+                index_image.at<int32_t>(2 * i, 2 * j + 1) = index_image.at<int32_t>(2 * i - 1, 2 * j + 2);
+            }
+            else
+            {
+                index_image.at<int32_t>(2 * i, 2 * j + 1) = next_index;
+                next_index++;
+            }
+
+            // Bottom Left
+            if (j > 0 && labels.at<uint16_t>(i, j) == labels.at<uint16_t>(i, j - 1))
+            {
+                index_image.at<int32_t>(2 * i + 1, 2 * j) = index_image.at<int32_t>(2 * i + 1, 2 * j - 1);
+            }
+            else
+            {
+                index_image.at<int32_t>(2 * i + 1, 2 * j) = next_index;
+                next_index++;
+            }
+
+            // Bottom Right
+            index_image.at<int32_t>(2 * i + 1, 2 * j + 1) = next_index;
+            next_index++;
+        }
+    }
+    std::size_t x_rows = next_index;
+    std::cout << "faces: " << labels.rows * labels.cols << std::endl;
+    std::cout << "possible vertices: " << labels.rows * labels.cols * 4 << std::endl;
+    std::cout << "num_indices: " << next_index << std::endl;
+
+    cv::Mat img;
+    index_image.convertTo(img, CV_16U);
+    cv::imwrite("data/tex/index.png", img);
+
+    std::vector<SpCoeff> coefficients_Gamma;
+    coefficients_Gamma.reserve(2 * next_index);
+    size_t row = 0;
+    constexpr float lambda = 0.1f;
+    for (int i = 0; i < labels.rows; i++)
+    {
+        for (int j = 0; j < labels.cols; j++)
+        {
+            if (labels.at<uint16_t>(i, j) == 0)
+            {
+                continue;
+            }
+
+            assert(index_image.at<int32_t>(2 * i, 2 * j) >= 0 && index_image.at<int32_t>(2 * i, 2 * j) < x_rows);
+            // Top side
+            if (i == 0 || labels.at<uint16_t>(i, j) != labels.at<uint16_t>(i - 1, j))
+            {
+                coefficients_Gamma.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i, 2 * j), lambda));
+                coefficients_Gamma.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i, 2 * j + 1), -lambda));
+                row++;
+                assert(index_image.at<int32_t>(2 * i, 2 * j + 1) >= 0 && index_image.at<int32_t>(2 * i, 2 * j + 1) < x_rows);
+            }
+
+            // Left side
+            if (j == 0 || labels.at<uint16_t>(i, j) != labels.at<uint16_t>(i, j - 1))
+            {
+                coefficients_Gamma.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i, 2 * j), lambda));
+                coefficients_Gamma.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i + 1, 2 * j), -lambda));
+                row++;
+                assert(index_image.at<int32_t>(2 * i + 1, 2 * j) >= 0 && index_image.at<int32_t>(2 * i + 1, 2 * j) < x_rows);
+            }
+
+            // Bottom side
+            coefficients_Gamma.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i + 1, 2 * j), lambda));
+            coefficients_Gamma.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i + 1, 2 * j + 1), -lambda));
+            row++;
+            assert(index_image.at<int32_t>(2 * i + 1, 2 * j) >= 0 && index_image.at<int32_t>(2 * i + 1, 2 * j) < x_rows);
+            assert(index_image.at<int32_t>(2 * i + 1, 2 * j + 1) >= 0 && index_image.at<int32_t>(2 * i + 1, 2 * j + 1) < x_rows);
+
+            // Right side
+            coefficients_Gamma.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i, 2 * j + 1), lambda));
+            coefficients_Gamma.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i + 1, 2 * j + 1), -lambda));
+            if (index_image.at<int32_t>(2 * i, 2 * j + 1) < 0)
+                std::cout << i << ", " << j << std::endl;
+            assert(index_image.at<int32_t>(2 * i, 2 * j + 1) >= 0);
+            assert(index_image.at<int32_t>(2 * i, 2 * j + 1) < x_rows);
+            assert(index_image.at<int32_t>(2 * i + 1, 2 * j + 1) >= 0 && index_image.at<int32_t>(2 * i + 1, 2 * j + 1) < x_rows);
+            row++;
+        }
+    }
+    std::cout << "built Gamma" << std::endl;
+    std::size_t Gamma_rows = row;
+    assert(Gamma_rows < static_cast<std::size_t>(std::numeric_limits<int>::max()));
+
+    SpMat Gamma(Gamma_rows, x_rows);
+    std::cout << "Created Gamma: " << Gamma_rows << "x" << x_rows << " from coeffs: " << coefficients_Gamma.size() << std::endl;
+    Gamma.setFromTriplets(coefficients_Gamma.begin(), coefficients_Gamma.end());
+
+    std::cout << "Set Gamma from triplets" << std::endl;
+
+    std::vector<SpCoeff> coefficients_A;
+    std::vector<float> coefficients_b;
+    row = 0;
+
+    for (int i = 0; i < labels.rows; i++)
+    {
+        for (int j = 0; j < labels.cols; j++)
+        {
+            uint16_t label = labels.at<uint16_t>(i, j);
+            if (label == 0)
+            {
+                continue;
+            }
+
+            std::set<uint16_t> marked_labels;
+            marked_labels.insert(label);
+
+            uint16_t label2 = labels.at<uint16_t>(i - 1, j - 1);
+            if (i > 0 && j > 0 && label2 > 0 && marked_labels.count(label2) == 0)
+            {
+                coefficients_A.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i, 2 * j), 1));
+                coefficients_A.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i - 1, 2 * j - 1), -1));
+                coefficients_b.push_back(calculate_difference(quad_infos, labels.size(), i, j, label, label2));
+                marked_labels.insert(label2);
+                row++;
+            }
+
+            label2 = labels.at<uint16_t>(i - 1, j);
+            if (i > 0 && j < labels.cols && label2 > 0 && marked_labels.count(label2) == 0)
+            {
+                coefficients_A.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i, 2 * j), 1));
+                coefficients_A.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i - 1, 2 * j), -1));
+                coefficients_b.push_back(calculate_difference(quad_infos, labels.size(), i, j, label, label2));
+                marked_labels.insert(label2);
+                row++;
+            }
+
+            label2 = labels.at<uint16_t>(i, j - 1);
+            if (i < labels.rows && j > 0 && label2 > 0 && marked_labels.count(label2) == 0)
+            {
+                coefficients_A.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i, 2 * j), 1));
+                coefficients_A.push_back(SpCoeff(row, index_image.at<int32_t>(2 * i, 2 * j - 1), -1));
+                coefficients_b.push_back(calculate_difference(quad_infos, labels.size(), i, j, label, label2));
+                marked_labels.insert(label2);
+                row++;
+            }
+        }
+    }
+
+    std::cout << "built A and b" << std::endl;
+
+    std::size_t A_rows = row;
+    assert(A_rows < static_cast<std::size_t>(std::numeric_limits<int>::max()));
+
+    SpMat A(A_rows, x_rows);
+    A.setFromTriplets(coefficients_A.begin(), coefficients_A.end());
+
+    SpMat I(x_rows, x_rows);
+    I.setIdentity();
+
+    SpMat Lhs = A.transpose() * A + Gamma.transpose() * Gamma + I * 0.0001f;
+
+    /* Only keep lower triangle (CG only uses the lower),
+     * prune the rest and compress matrix. */
+    Lhs.prune([](const int &row, const int &col, const float &value) -> bool
+              { return col <= row && value != 0.0f; }); // value != 0.0f is only to suppress a compiler warning
+
+    std::cout << " done." << std::endl;
+    std::cout << "\tLhs dimensionality: " << Lhs.rows() << " x " << Lhs.cols() << std::endl;
+
+    util::WallTimer timer;
+    std::cout << "\tCalculating adjustments:" << std::endl;
+    /* Prepare solver. */
+    Eigen::ConjugateGradient<SpMat, Eigen::Lower> cg;
+    cg.setMaxIterations(1000);
+    cg.setTolerance(0.0001);
+    cg.compute(Lhs);
+
+    /* Prepare right hand side. */
+    Eigen::VectorXf b(A_rows);
+    for (std::size_t i = 0; i < coefficients_b.size(); ++i)
+    {
+        b[i] = coefficients_b[i];
+    }
+    Eigen::VectorXf Rhs = SpMat(A.transpose()) * b;
+
+    /* Solve for x. */
+    Eigen::VectorXf x(x_rows);
+    x = cg.solve(Rhs);
+
+    /* Subtract mean because system is underconstrained and we seek the solution with minimal adjustments. */
+    x = x.array() - x.mean();
+
+    std::cout << "\t\tCG took " << cg.iterations() << " iterations. Residual is " << cg.error() << std::endl;
+
+    cv::Mat adjustments = cv::Mat::zeros(index_image.rows, index_image.cols, CV_32F);
+    for (int i = 0; i < index_image.rows; i++)
+    {
+        for (int j = 0; j < index_image.cols; j++)
+        {
+            int32_t index = index_image.at<int32_t>(i, j);
+            if (index < 0)
+            {
+                continue;
+            }
+
+            adjustments.at<float>(i, j) = x[index];
+        }
+    }
+
+    return adjustments;
+}
+
+cv::Mat create_mosaic(std::vector<ImageView> &image_views, const QuadMesh &mesh, const cv::Mat &labels, const cv::Mat &adjustments)
+{
+    constexpr size_t tile_width = 32;
+    cv::Mat mosaic = cv::Mat::zeros(labels.rows * tile_width, labels.cols * tile_width, CV_16U);
+
+    cv::Mat weight_br(tile_width, tile_width, CV_32F);
+    for (int i = 0; i < tile_width; i++)
+    {
+        float y = (i + 0.5) / tile_width;
+        for (int j = 0; j < tile_width; j++)
+        {
+            float x = (j + 0.5) / tile_width;
+            weight_br.at<float>(i, j) = x * y;
+        }
+    }
+
+    cv::Mat weight_tl;
+    cv::Mat weight_tr;
+    cv::Mat weight_bl;
+    cv::rotate(weight_br, weight_tl, cv::ROTATE_180);
+    cv::rotate(weight_br, weight_tr, cv::ROTATE_90_COUNTERCLOCKWISE);
+    cv::rotate(weight_br, weight_bl, cv::ROTATE_90_CLOCKWISE);
 
     for (size_t k = 0; k < image_views.size(); k++)
     {
@@ -81,7 +433,13 @@ cv::Mat create_mosaic(std::vector<ImageView> &image_views, const QuadMesh &mesh,
                     std::vector<cv::Point2f> corner_pixels = image_views[k].get_pixel_coords(corner_points);
 
                     cv::Mat tile = image_views[k].GetTile(corner_pixels);
-                    tile.copyTo(mosaic(cv::Rect(j * tile_size, i * tile_size, tile_size, tile_size)));
+
+                    cv::Mat adjustment = adjustments.at<float>(2 * i, 2 * j) * weight_tl +
+                                         adjustments.at<float>(2 * i, 2 * j + 1) * weight_tr +
+                                         adjustments.at<float>(2 * i + 1, 2 * j + 1) * weight_br +
+                                         adjustments.at<float>(2 * i + 1, 2 * j) * weight_bl;
+                    cv::add(tile, adjustment, tile, cv::noArray(), tile.type());
+                    tile.copyTo(mosaic(cv::Rect(j * tile_width, i * tile_width, tile_width, tile_width)));
                 }
             }
         }
@@ -148,6 +506,7 @@ int main(int argc, char **argv)
     std::size_t const num_faces = mesh.NumFaces();
 
     cv::Mat labels;
+    cv::Mat adjustments;
     std::vector<std::vector<QuadInfo>> quad_infos;
 
     if (conf.labeling_file.empty())
@@ -198,6 +557,12 @@ int main(int argc, char **argv)
         try
         {
             labels = view_selection(data_costs, mesh, pairwise_cost, conf.settings);
+            adjustments = global_seam_leveling(labels, quad_infos);
+
+            cv::Mat img;
+            cv::normalize(adjustments, img, 255, 0, cv::NORM_MINMAX);
+            cv::imwrite(conf.out_prefix + "_adjustments.png", img);
+
             // labels = best_local_labels(quad_infos, mesh);
         }
         catch (std::runtime_error &e)
@@ -219,8 +584,12 @@ int main(int argc, char **argv)
         labels = cv::imread(conf.labeling_file, cv::IMREAD_ANYDEPTH);
     }
 
-    cv::Mat mosaic = create_mosaic(image_views, mesh, labels);
+    cv::Mat mosaic = create_mosaic(image_views, mesh, labels, adjustments);
     cv::imwrite(conf.out_prefix + "_mosaic.png", mosaic);
+
+    adjustments = 0;
+    mosaic = create_mosaic(image_views, mesh, labels, adjustments);
+    cv::imwrite(conf.out_prefix + "_mosaic_unadjusted.png", mosaic);
 
     //     tex::TextureAtlases texture_atlases;
     //     {

@@ -28,6 +28,22 @@ ImageView::ImageView(std::size_t id,
     camera.fill_camera_pos(*pos);
     camera.fill_viewing_direction(*viewdir);
     camera.fill_world_to_cam(*world_to_cam);
+
+    _weight_br = cv::Mat(_tile_width, _tile_width, CV_32F);
+    for (int i = 0; i < _tile_width; i++)
+    {
+        float y = (i + 0.5) / _tile_width;
+        for (int j = 0; j < _tile_width; j++)
+        {
+            float x = (j + 0.5) / _tile_width;
+            _weight_br.at<float>(i, j) = x * y;
+        }
+    }
+    _weight_br = _weight_br / cv::sum(_weight_br)[0];
+
+    cv::rotate(_weight_br, _weight_tl, cv::ROTATE_180);
+    cv::rotate(_weight_br, _weight_tr, cv::ROTATE_90_COUNTERCLOCKWISE);
+    cv::rotate(_weight_br, _weight_bl, cv::ROTATE_90_CLOCKWISE);
 }
 
 cv::Point2f ImageView::get_pixel_coords(math::Vec3f const &vertex) const
@@ -148,6 +164,12 @@ void ImageView::get_face_info(const std::vector<cv::Point2f> &corners,
     {
         face_info->num_valid_pixels = cv::countNonZero(tile);
     }
+    cv::Mat tile_f;
+    tile.convertTo(tile_f, CV_32F);
+    face_info->tl = _weight_tl.dot(tile_f);
+    face_info->tr = _weight_tr.dot(tile_f);
+    face_info->br = _weight_br.dot(tile_f);
+    face_info->bl = _weight_bl.dot(tile_f);
     if (settings.data_term == tex::DATA_TERM_GMI)
     {
         cv::Mat grad_x;
@@ -156,8 +178,8 @@ void ImageView::get_face_info(const std::vector<cv::Point2f> &corners,
         cv::Sobel(tile, grad_y, CV_32F, 0, 1);
         cv::multiply(grad_x, grad_x, grad_x);
         cv::multiply(grad_y, grad_y, grad_y);
-        cv::sqrt(grad_x + grad_y, grad_x);
-        gmi = cv::mean(grad_x)[0];
+        // cv::sqrt(grad_x + grad_y, grad_x);
+        gmi = cv::mean(1 - 1 / ((grad_x + grad_y) / 32 + 1))[0];
     }
 
     switch (settings.data_term)

@@ -15,6 +15,10 @@ struct QuadInfo
     float quality;
     bool fully_visible;
     uint16_t num_valid_pixels;
+    float tl;
+    float tr;
+    float br;
+    float bl;
 
     bool operator<(QuadInfo const &other) const
     {
@@ -36,6 +40,11 @@ private:
     math::Matrix4f world_to_cam;
     std::string image_file;
     cv::Mat image;
+
+    cv::Mat _weight_tl;
+    cv::Mat _weight_tr;
+    cv::Mat _weight_br;
+    cv::Mat _weight_bl;
     
     static constexpr size_t _tile_width = 32;
 
