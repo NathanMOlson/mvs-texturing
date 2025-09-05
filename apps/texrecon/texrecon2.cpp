@@ -28,9 +28,41 @@
 #include "arguments.h"
 
 cv::Mat view_selection(tex::DataCosts const &data_costs,
-                    const QuadMesh &mesh,
-                    const std::vector<float> &cost_table,
-                    tex::Settings const &);
+                       const QuadMesh &mesh,
+                       const std::vector<float> &cost_table,
+                       tex::Settings const &);
+
+cv::Mat create_mosaic(std::vector<ImageView>& image_views, const QuadMesh &mesh, const cv::Mat &labels)
+{
+    constexpr size_t tile_size = 32;
+    cv::Mat mosaic = cv::Mat::zeros(labels.rows * tile_size, labels.cols * tile_size, CV_16U);
+
+    for (size_t k = 0; k < image_views.size(); k++)
+    {
+        image_views[k].load_image();
+        for (int i = 0; i < labels.rows; i++)
+        {
+            for (int j = 0; j < labels.cols; j++)
+            {
+                if (labels.at<uint16_t>(i, j) == k + 1)
+                {
+                    std::vector<math::Vec3f> corner_points;
+                    corner_points.push_back(mesh.GetVertex(i,j));
+                    corner_points.push_back(mesh.GetVertex(i,j+1));
+                    corner_points.push_back(mesh.GetVertex(i+1,j+1));
+                    corner_points.push_back(mesh.GetVertex(i+1,j));
+                    
+                    std::vector<cv::Point2f> corner_pixels = image_views[k].get_pixel_coords(corner_points);
+                    
+                    cv::Mat tile = image_views[k].GetTile(corner_pixels);
+                    tile.copyTo(mosaic(cv::Rect(j*tile_size, i*tile_size, tile_size, tile_size)));
+                }
+            }
+        }
+        image_views[k].release_image();
+    }
+    return mosaic;
+}
 
 int main(int argc, char **argv)
 {
@@ -89,6 +121,8 @@ int main(int argc, char **argv)
 
     std::size_t const num_faces = mesh.NumFaces();
 
+    cv::Mat labels;
+
     if (conf.labeling_file.empty())
     {
         std::cout << "View selection:" << std::endl;
@@ -134,7 +168,6 @@ int main(int argc, char **argv)
             }
         }
 
-        cv::Mat labels;
         try
         {
             labels = view_selection(data_costs, mesh, pairwise_cost, conf.settings);
@@ -155,27 +188,11 @@ int main(int argc, char **argv)
     }
     else
     {
-        // std::cout << "Loading labeling from file... " << std::flush;
-
-        // /* Load labeling from file. */
-        // std::vector<std::size_t> labeling = vector_from_file<std::size_t>(conf.labeling_file);
-        // if (labeling.size() != graph.num_nodes()) {
-        //     std::cerr << "Wrong labeling file for this mesh/scene combination... aborting!" << std::endl;
-        //     std::exit(EXIT_FAILURE);
-        // }
-
-        // /* Transfer labeling to graph. */
-        // for (std::size_t i = 0; i < labeling.size(); ++i) {
-        //     const std::size_t label = labeling[i];
-        //     if (label > image_views.size()){
-        //         std::cerr << "Wrong labeling file for this mesh/scene combination... aborting!" << std::endl;
-        //         std::exit(EXIT_FAILURE);
-        //     }
-        //     graph.set_label(i, label);
-        // }
-
-        // std::cout << "done." << std::endl;
+        labels = cv::imread(conf.labeling_file, cv::IMREAD_ANYDEPTH);
     }
+
+    cv::Mat mosaic = create_mosaic(image_views, mesh, labels);
+    cv::imwrite(conf.out_prefix + "_mosaic.png", mosaic);
 
     //     tex::TextureAtlases texture_atlases;
     //     {

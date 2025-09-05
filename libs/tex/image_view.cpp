@@ -95,7 +95,7 @@ bool ImageView::inside(const std::vector<cv::Point2f> &corners) const
 {
     for (const auto &corner : corners)
     {
-        if (valid_pixel(corner))
+        if (!valid_pixel(corner))
         {
             return false;
         }
@@ -117,7 +117,7 @@ bool ImageView::intersects(const std::vector<cv::Point2f> &corners) const
 
 void ImageView::load_image(void)
 {
-    image = cv::imread(image_file);
+    image = cv::imread(image_file, cv::IMREAD_ANYDEPTH | cv::IMREAD_UNCHANGED);
 }
 
 void ImageView::release_image(void)

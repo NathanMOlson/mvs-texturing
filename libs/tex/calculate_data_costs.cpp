@@ -384,7 +384,7 @@ calculate_face_projection_infos(const QuadMesh* mesh,
                     
                     image_view.get_face_info(corner_pixels, &info, settings);
 
-                    if (info.quality == 0.0) continue;
+                    if (!info.fully_visible || info.quality <= 0.0) continue;
                
                     std::pair<std::size_t, QuadInfo> pair(face_id, info);
                     projected_face_view_infos.push_back(pair);
