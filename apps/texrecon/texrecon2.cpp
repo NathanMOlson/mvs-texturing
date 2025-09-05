@@ -559,8 +559,8 @@ int main(int argc, char **argv)
             labels = view_selection(data_costs, mesh, pairwise_cost, conf.settings);
             adjustments = global_seam_leveling(labels, quad_infos);
 
-            cv::Mat img;
-            cv::normalize(adjustments, img, 255, 0, cv::NORM_MINMAX);
+            cv::Mat img = adjustments + 128;
+            img.convertTo(img, CV_8U);
             cv::imwrite(conf.out_prefix + "_adjustments.png", img);
 
             // labels = best_local_labels(quad_infos, mesh);
