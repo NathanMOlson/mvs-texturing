@@ -32,7 +32,33 @@ cv::Mat view_selection(tex::DataCosts const &data_costs,
                        const std::vector<float> &cost_table,
                        tex::Settings const &);
 
-cv::Mat create_mosaic(std::vector<ImageView>& image_views, const QuadMesh &mesh, const cv::Mat &labels)
+cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, const QuadMesh &mesh)
+{
+    cv::Mat labels = cv::Mat::zeros(mesh.NumFaceRows(), mesh.NumFaceCols(), CV_16U);
+
+    for (int i = 0; i < labels.rows; i++)
+    {
+        for (int j = 0; j < labels.cols; j++)
+        {
+            int index = i*labels.cols + j;
+            float q = 0;
+            uint16_t num_valid = 0;
+            
+            for (const QuadInfo& quad_info : quad_infos[index])
+            {
+                if (quad_info.num_valid_pixels > num_valid || (quad_info.num_valid_pixels == num_valid && quad_info.quality > q))
+                {
+                    q = quad_info.quality;
+                    num_valid = quad_info.num_valid_pixels;
+                    labels.at<uint16_t>(i,j) = quad_info.view_id + 1;
+                }
+            }
+        }
+    }
+    return labels;
+}
+
+cv::Mat create_mosaic(std::vector<ImageView> &image_views, const QuadMesh &mesh, const cv::Mat &labels)
 {
     constexpr size_t tile_size = 32;
     cv::Mat mosaic = cv::Mat::zeros(labels.rows * tile_size, labels.cols * tile_size, CV_16U);
@@ -47,15 +73,15 @@ cv::Mat create_mosaic(std::vector<ImageView>& image_views, const QuadMesh &mesh,
                 if (labels.at<uint16_t>(i, j) == k + 1)
                 {
                     std::vector<math::Vec3f> corner_points;
-                    corner_points.push_back(mesh.GetVertex(i,j));
-                    corner_points.push_back(mesh.GetVertex(i,j+1));
-                    corner_points.push_back(mesh.GetVertex(i+1,j+1));
-                    corner_points.push_back(mesh.GetVertex(i+1,j));
-                    
+                    corner_points.push_back(mesh.GetVertex(i, j));
+                    corner_points.push_back(mesh.GetVertex(i, j + 1));
+                    corner_points.push_back(mesh.GetVertex(i + 1, j + 1));
+                    corner_points.push_back(mesh.GetVertex(i + 1, j));
+
                     std::vector<cv::Point2f> corner_pixels = image_views[k].get_pixel_coords(corner_points);
-                    
+
                     cv::Mat tile = image_views[k].GetTile(corner_pixels);
-                    tile.copyTo(mosaic(cv::Rect(j*tile_size, i*tile_size, tile_size, tile_size)));
+                    tile.copyTo(mosaic(cv::Rect(j * tile_size, i * tile_size, tile_size, tile_size)));
                 }
             }
         }
@@ -122,6 +148,7 @@ int main(int argc, char **argv)
     std::size_t const num_faces = mesh.NumFaces();
 
     cv::Mat labels;
+    std::vector<std::vector<QuadInfo>> quad_infos;
 
     if (conf.labeling_file.empty())
     {
@@ -131,7 +158,7 @@ int main(int argc, char **argv)
         tex::DataCosts data_costs(num_faces, image_views.size());
         if (conf.data_cost_file.empty())
         {
-            calculate_data_costs(&mesh, image_views, conf.settings, &data_costs);
+            quad_infos = calculate_data_costs(&mesh, image_views, conf.settings, &data_costs);
 
             if (conf.write_intermediate_results)
             {
@@ -171,6 +198,7 @@ int main(int argc, char **argv)
         try
         {
             labels = view_selection(data_costs, mesh, pairwise_cost, conf.settings);
+            // labels = best_local_labels(quad_infos, mesh);
         }
         catch (std::runtime_error &e)
         {

@@ -384,7 +384,7 @@ calculate_face_projection_infos(const QuadMesh* mesh,
                     
                     image_view.get_face_info(corner_pixels, &info, settings);
 
-                    if (!info.fully_visible || info.quality <= 0.0) continue;
+                    if (info.quality <= 0.0) continue;
                
                     std::pair<std::size_t, QuadInfo> pair(face_id, info);
                     projected_face_view_infos.push_back(pair);
@@ -515,11 +515,12 @@ postprocess_face_infos(Settings const & settings,
             /* Clamp to percentile and normalize. */
             float normalized_quality = std::min(1.0f, info.quality / percentile);
             float data_cost = (1.0f - normalized_quality);
+            if (!info.fully_visible)
+            {
+                continue;
+            }
             data_costs->set_value(i, info.view_id, data_cost);
         }
-
-        /* Ensure that all memory is freeed. */
-        face_projection_infos.at(i) = std::vector<QuadInfo>();
     }
 
     std::cout << "\tMaximum quality of a face within an image: " << max_quality << std::endl;
@@ -544,7 +545,7 @@ calculate_data_costs(mve::TriangleMesh::ConstPtr mesh, std::vector<TextureView> 
 }
 
 
-void
+std::vector<std::vector<QuadInfo>>
 calculate_data_costs(const QuadMesh* mesh, const std::vector<ImageView>& image_views,
     Settings const & settings, DataCosts * data_costs) {
 
@@ -559,6 +560,7 @@ calculate_data_costs(const QuadMesh* mesh, const std::vector<ImageView>& image_v
     std::vector<std::vector<QuadInfo>> face_projection_infos(num_faces);
     calculate_face_projection_infos(mesh, image_views, settings, face_projection_infos);
     postprocess_face_infos(settings, face_projection_infos, data_costs);
+    return face_projection_infos;
 }
 
 TEX_NAMESPACE_END

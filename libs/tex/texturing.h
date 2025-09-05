@@ -68,7 +68,7 @@ void
 calculate_data_costs(mve::TriangleMesh::ConstPtr mesh,
     TextureViews * texture_views, Settings const & settings,
     DataCosts * data_costs);
-void
+std::vector<std::vector<QuadInfo>>
 calculate_data_costs(const QuadMesh* mesh,
     const std::vector<ImageView>& image_views, Settings const & settings,
     DataCosts * data_costs);

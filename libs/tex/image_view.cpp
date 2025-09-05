@@ -49,15 +49,14 @@ std::vector<cv::Point2f> ImageView::get_pixel_coords(const std::vector<math::Vec
 
 cv::Mat ImageView::GetTile(const std::vector<cv::Point2f> &corners) const
 {
-    const size_t tile_width = 32;
     std::vector<cv::Point2f> tile_corners;
     tile_corners.push_back(cv::Point2f(-0.5, -0.5));
-    tile_corners.push_back(cv::Point2f(tile_width - 0.5, -0.5));
-    tile_corners.push_back(cv::Point2f(tile_width - 0.5, tile_width - 0.5));
-    tile_corners.push_back(cv::Point2f(-0.5, tile_width - 0.5));
+    tile_corners.push_back(cv::Point2f(_tile_width - 0.5, -0.5));
+    tile_corners.push_back(cv::Point2f(_tile_width - 0.5, _tile_width - 0.5));
+    tile_corners.push_back(cv::Point2f(-0.5, _tile_width - 0.5));
 
     cv::Mat warp = cv::getPerspectiveTransform(corners, tile_corners);
-    cv::Mat tile(tile_width, tile_width, image.type());
+    cv::Mat tile(_tile_width, _tile_width, image.type());
     cv::warpPerspective(image, tile, warp, tile.size());
     return tile;
 }
@@ -141,6 +140,14 @@ void ImageView::get_face_info(const std::vector<cv::Point2f> &corners,
 
     float gmi = 0;
     cv::Mat tile = GetTile(corners);
+    if (face_info->fully_visible)
+    {
+        face_info->num_valid_pixels = _tile_width * _tile_width;
+    }
+    else
+    {
+        face_info->num_valid_pixels = cv::countNonZero(tile);
+    }
     if (settings.data_term == tex::DATA_TERM_GMI)
     {
         cv::Mat grad_x;

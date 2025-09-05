@@ -14,6 +14,7 @@ struct QuadInfo
     std::uint16_t view_id;
     float quality;
     bool fully_visible;
+    uint16_t num_valid_pixels;
 
     bool operator<(QuadInfo const &other) const
     {
@@ -35,6 +36,8 @@ private:
     math::Matrix4f world_to_cam;
     std::string image_file;
     cv::Mat image;
+    
+    static constexpr size_t _tile_width = 32;
 
 public:
     /** Returns the id of the TexureView which is consistent for every run. */
