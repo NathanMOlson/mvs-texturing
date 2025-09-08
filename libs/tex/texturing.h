@@ -20,7 +20,6 @@
 #include "obj_model.h"
 #include "uni_graph.h"
 #include "texture_view.h"
-#include "image_view.h"
 #include "texture_patch.h"
 #include "texture_atlas.h"
 #include "sparse_table.h"
@@ -67,10 +66,6 @@ build_adjacency_graph(mve::TriangleMesh::ConstPtr mesh,
 void
 calculate_data_costs(mve::TriangleMesh::ConstPtr mesh,
     TextureViews * texture_views, Settings const & settings,
-    DataCosts * data_costs);
-std::vector<std::vector<QuadInfo>>
-calculate_data_costs(const QuadMesh* mesh,
-    const std::vector<ImageView>& image_views, Settings const & settings,
     DataCosts * data_costs);
 
 void

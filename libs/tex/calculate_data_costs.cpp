@@ -19,7 +19,6 @@
 #include "texturing.h"
 #include "sparse_table.h"
 #include "progress_counter.h"
-#include "quadmesh.h"
 
 typedef acc::BVHTree<unsigned int, math::Vec3f> BVHTree;
 
@@ -299,118 +298,6 @@ calculate_face_projection_infos(mve::TriangleMesh::ConstPtr mesh,
 
 
 void
-calculate_face_projection_infos(const QuadMesh* mesh,
-    const std::vector<ImageView>& image_views, Settings const & settings,
-    std::vector<std::vector<QuadInfo>>& face_projection_infos) {
-
-    // std::vector<unsigned int> const & faces = mesh->get_faces();
-    // std::vector<math::Vec3f> const & vertices = mesh->get_vertices();
-    // mve::TriangleMesh::NormalList const & face_normals = mesh->get_face_normals();
-
-    std::size_t const num_views = image_views.size();
-
-    util::WallTimer timer;
-    //std::cout << "\tBuilding BVH from " << mesh->NumFaces() << " faces... " << std::flush;
-    //BVHTree bvh_tree(faces, vertices);
-    //std::cout << "done. (Took: " << timer.get_elapsed() << " ms)" << std::endl;
-
-    ProgressCounter view_counter("\tCalculating face qualities", num_views);
-    #pragma omp parallel
-    {
-        std::vector<std::pair<std::size_t, QuadInfo> > projected_face_view_infos;
-
-        #pragma omp for schedule(dynamic)
-#if !defined(_MSC_VER)
-        for (std::uint16_t k = 0; k < static_cast<std::uint16_t>(num_views); ++k) {
-#else
-        for (std::int32_t k = 0; k < num_views; ++k) {
-#endif
-            view_counter.progress<SIMPLE>();
-
-            ImageView image_view = image_views.at(k);
-            image_view.load_image();
-
-            math::Vec3f const & view_pos = image_view.get_pos();
-            math::Vec3f const & viewing_direction = image_view.get_viewing_direction();
-
-            for (std::size_t i = 0; i < mesh->NumFaceRows(); i++) {
-                for (std::size_t j = 0; j < mesh->NumFaceCols(); j++) {
-                    std::size_t face_id = i*mesh->NumFaceCols() + j;
-                    std::vector<math::Vec3f> corner_points;
-                    math::Vec3f const & v1 = mesh->GetVertex(i,j);
-                    math::Vec3f const & v2 = mesh->GetVertex(i,j+1);
-                    math::Vec3f const & v3 = mesh->GetVertex(i+1,j+1);
-                    math::Vec3f const & v4 = mesh->GetVertex(i+1,j);
-                    math::Vec3f const & face_normal = math::cross_product(v3-v1, v2-v4);
-                    math::Vec3f const face_center = (v1 + v2 + v3 + v4) / 4.0f;
-
-                    corner_points.push_back(v1);
-                    corner_points.push_back(v2);
-                    corner_points.push_back(v3);
-                    corner_points.push_back(v4);
-                    
-                    std::vector<cv::Point2f> corner_pixels = image_view.get_pixel_coords(corner_points);
-                    
-                    /* Check visibility and compute quality */
-                    math::Vec3f view_to_face_vec = (face_center - view_pos).normalized();
-                    math::Vec3f face_to_view_vec = -view_to_face_vec;
-                    math::Vec3f up(0, 0, 1);
-
-                    /* Backface and basic frustum culling */
-                    float viewing_angle = face_to_view_vec.dot(face_normal);
-                    if (viewing_angle < 0.0f || viewing_direction.dot(view_to_face_vec) < 0.0f)
-                        continue;
-
-                    if (std::acos(viewing_angle) > MATH_DEG2RAD(90.0f))
-                        continue;
-
-                    /* Projects into the valid part of the ImageView? */
-                    if (!image_view.intersects(corner_pixels))
-                        continue;
-
-                    // BVHTree::Ray ray;
-                    // ray.dir = view_pos - face_center;
-                    // ray.tmax = ray.dir.norm();
-                    // ray.tmin = ray.tmax * 0.0001f;
-                    // ray.dir.normalize();
-
-                    // BVHTree::Hit hit;
-                    // if (bvh_tree.intersect(ray, &hit)) {
-                    //     continue;
-                    // }
-
-
-                    QuadInfo info = {k, 0.0f, false};
-                    
-                    image_view.get_face_info(corner_pixels, &info, settings);
-
-                    if (info.quality <= 0.0) continue;
-               
-                    std::pair<std::size_t, QuadInfo> pair(face_id, info);
-                    projected_face_view_infos.push_back(pair);
-
-                }
-            }
-
-            image_view.release_image();
-            view_counter.inc();
-        }
-
-        //std::sort(projected_face_view_infos.begin(), projected_face_view_infos.end());
-
-        #pragma omp critical
-        {
-            for (std::size_t i = projected_face_view_infos.size(); 0 < i; --i) {
-                std::size_t face_id = projected_face_view_infos[i - 1].first;
-                QuadInfo const & info = projected_face_view_infos[i - 1].second;
-                face_projection_infos.at(face_id).push_back(info);
-            }
-            projected_face_view_infos.clear();
-        }
-    }
-}
-
-void
 postprocess_face_infos(Settings const & settings,
         FaceProjectionInfos * face_projection_infos,
         DataCosts * data_costs) {
@@ -469,65 +356,6 @@ postprocess_face_infos(Settings const & settings,
 }
 
 void
-postprocess_face_infos(Settings const & settings,
-        std::vector<std::vector<QuadInfo>>& face_projection_infos,
-        DataCosts * data_costs) {
-
-    ProgressCounter face_counter("\tPostprocessing face infos",
-        face_projection_infos.size());
-    #pragma omp parallel for schedule(dynamic)
-#if !defined(_MSC_VER)
-    for (std::size_t i = 0; i < face_projection_infos.size(); ++i) {
-#else
-    for (std::int64_t i = 0; i < face_projection_infos.size(); ++i) {
-#endif
-        face_counter.progress<SIMPLE>();
-
-        std::vector<QuadInfo> & infos = face_projection_infos.at(i);
-        // if (settings.outlier_removal != OUTLIER_REMOVAL_NONE) {
-        //     photometric_outlier_detection(&infos, settings);
-
-        //     infos.erase(std::remove_if(infos.begin(), infos.end(),
-        //         [](FaceProjectionInfo const & info) -> bool {return info.quality == 0.0f;}),
-        //         infos.end());
-        // }
-        std::sort(infos.begin(), infos.end());
-
-        face_counter.inc();
-    }
-
-    /* Determine the function for the normlization. */
-    float max_quality = 0.0f;
-    for (std::size_t i = 0; i < face_projection_infos.size(); ++i)
-        for (QuadInfo const & info : face_projection_infos.at(i))
-            max_quality = std::max(max_quality, info.quality);
-
-    Histogram hist_qualities(0.0f, max_quality, 10000);
-    for (std::size_t i = 0; i < face_projection_infos.size(); ++i)
-        for (QuadInfo const & info : face_projection_infos.at(i))
-            hist_qualities.add_value(info.quality);
-    float percentile = hist_qualities.get_approx_percentile(0.995f);
-
-    /* Calculate the costs. */
-    for (std::uint32_t i = 0; i < face_projection_infos.size(); ++i) {
-        for (QuadInfo const & info : face_projection_infos.at(i)) {
-
-            /* Clamp to percentile and normalize. */
-            float normalized_quality = std::min(1.0f, info.quality / percentile);
-            float data_cost = (1.0f - normalized_quality);
-            if (!info.fully_visible)
-            {
-                continue;
-            }
-            data_costs->set_value(i, info.view_id, data_cost);
-        }
-    }
-
-    std::cout << "\tMaximum quality of a face within an image: " << max_quality << std::endl;
-    std::cout << "\tClamping qualities to " << percentile << " within normalization." << std::endl;
-}
-
-void
 calculate_data_costs(mve::TriangleMesh::ConstPtr mesh, std::vector<TextureView> * texture_views,
     Settings const & settings, DataCosts * data_costs) {
 
@@ -544,23 +372,5 @@ calculate_data_costs(mve::TriangleMesh::ConstPtr mesh, std::vector<TextureView> 
     postprocess_face_infos(settings, &face_projection_infos, data_costs);
 }
 
-
-std::vector<std::vector<QuadInfo>>
-calculate_data_costs(const QuadMesh* mesh, const std::vector<ImageView>& image_views,
-    Settings const & settings, DataCosts * data_costs) {
-
-    std::size_t const num_faces = mesh->NumFaces();
-    std::size_t const num_views = image_views.size();
-
-    if (num_faces > std::numeric_limits<std::uint32_t>::max())
-        throw std::runtime_error("Exeeded maximal number of faces");
-    if (num_views > std::numeric_limits<std::uint16_t>::max())
-        throw std::runtime_error("Exeeded maximal number of views");
-
-    std::vector<std::vector<QuadInfo>> face_projection_infos(num_faces);
-    calculate_face_projection_infos(mesh, image_views, settings, face_projection_infos);
-    postprocess_face_infos(settings, face_projection_infos, data_costs);
-    return face_projection_infos;
-}
 
 TEX_NAMESPACE_END

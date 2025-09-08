@@ -1,0 +1,7 @@
+include_directories(SYSTEM "/usr/include/opencv4")
+add_executable(texrecon2 texrecon2.cpp arguments.cpp quadmesh.cpp image_view.cpp)
+set_property(TARGET texrecon2 PROPERTY INTERPROCEDURAL_OPTIMIZATION True)
+include_directories(${TBB_INCLUDE_DIRS})
+include_directories(CMAKE_CURRENT_SOURCE_DIR)
+target_link_libraries(texrecon2 tex ${TBB_LIBRARIES} ${MVE_MVE_LIBRARY} ${MVE_UTIL_LIBRARY})
+install(TARGETS texrecon2 RUNTIME DESTINATION bin)
