@@ -35,12 +35,14 @@ typedef Eigen::Triplet<float, int> SpCoeff;
 
 cv::Mat view_selection(tex::DataCosts const &data_costs,
                        const QuadMesh &mesh,
+                       const cv::Mat &tile_costs,
                        const std::vector<float> &cost_table,
                        tex::Settings const &);
 
-cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, const QuadMesh &mesh)
+cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, const QuadMesh &mesh, cv::Mat& tile_cost)
 {
     cv::Mat labels = cv::Mat::zeros(mesh.NumFaceRows(), mesh.NumFaceCols(), CV_16U);
+    tile_cost = cv::Mat::ones(mesh.NumFaceRows(), mesh.NumFaceCols(), CV_32F);
 
     for (int i = 0; i < labels.rows; i++)
     {
@@ -57,6 +59,7 @@ cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, 
                     q = quad_info.quality;
                     num_valid = quad_info.num_valid_pixels;
                     labels.at<uint16_t>(i, j) = quad_info.view_id + 1;
+                    tile_cost.at<float>(i, j) = quad_info.quality;
                 }
             }
         }
@@ -554,12 +557,18 @@ int main(int argc, char **argv)
             }
         }
 
+        cv::Mat tile_cost;
+        labels = best_local_labels(quad_infos, mesh, tile_cost);
+        cv::Mat img;
+        cv::normalize(tile_cost, img, 255, 0, cv::NORM_MINMAX, CV_8U); 
+        cv::imwrite(conf.out_prefix + "_edge_cost.png", img);    
+
         try
         {
-            labels = view_selection(data_costs, mesh, pairwise_cost, conf.settings);
+            labels = view_selection(data_costs, mesh, tile_cost, pairwise_cost, conf.settings);
             adjustments = global_seam_leveling(labels, quad_infos);
 
-            cv::Mat img = adjustments + 128;
+            img = adjustments + 128;
             img.convertTo(img, CV_8U);
             cv::imwrite(conf.out_prefix + "_adjustments.png", img);
 

@@ -144,6 +144,7 @@ view_selection(DataCosts const & data_costs, UniGraph * graph, const std::vector
 TEX_NAMESPACE_END
 
 cv::Mat view_selection(tex::DataCosts const & data_costs, const QuadMesh& mesh,
+                    const cv::Mat& tile_costs,
                     const std::vector<float>& cost_table, tex::Settings const &) {
     using uint_t = unsigned int;
     using cost_t = float;
@@ -157,14 +158,16 @@ cv::Mat view_selection(tex::DataCosts const & data_costs, const QuadMesh& mesh,
     size_t rows = mesh.NumFaceRows();
     size_t cols = mesh.NumFaceCols();
 
-    for (std::size_t i = 0; i < rows - 1; ++i) {
+    for (std::size_t i = 0; i < rows; ++i) {
         for (std::size_t j = 0; j < cols - 1; ++j) {
-            mgraph.add_edge(i*cols + j, i*cols + j + 1, 1.0f);
-            mgraph.add_edge(i*cols + j, (i+1)*cols + j, 1.0f);
+            mgraph.add_edge(i*cols + j, i*cols + j + 1, (tile_costs.at<float>(i, j) + tile_costs.at<float>(i, j+1)) / 2);
         }
     }
-    mgraph.add_edge((rows-2)*cols + cols-1, (rows-1)*cols + cols-1, 1.0f);
-    mgraph.add_edge((rows-1)*cols + cols-2, (rows-1)*cols + cols-1, 1.0f);
+    for (std::size_t i = 0; i < rows - 1; ++i) {
+        for (std::size_t j = 0; j < cols; ++j) {
+            mgraph.add_edge(i*cols + j, (i+1)*cols + j, (tile_costs.at<float>(i, j) + tile_costs.at<float>(i+1, j)) / 2);
+        }
+    }
     mgraph.update_components();
 
     mapmap::LabelSet<cost_t, simd_w> label_set(mesh.NumFaces(), false);
