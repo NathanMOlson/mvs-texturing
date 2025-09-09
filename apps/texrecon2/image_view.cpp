@@ -123,7 +123,6 @@ bool ImageView::IsImageLoaded() const
     return !image.empty();
 }
 
-
 std::filesystem::path ImageView::ImagePath() const
 {
     return image_file;
@@ -263,8 +262,8 @@ std::shared_ptr<Undistorter> create_undistorter_brown(const json &cam)
 {
     double fx = cam["focal_x"];
     double fy = cam["focal_y"];
-    double cx = cam["cx"];
-    double cy = cam["cy"];
+    double cx = cam["c_x"];
+    double cy = cam["c_y"];
     size_t width = cam["width"];
     size_t height = cam["height"];
     std::vector<double> dist_coeffs;
