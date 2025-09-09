@@ -1,39 +1,80 @@
 #include "image_view.h"
-#include "tex/progress_counter.h"
 #include <opencv2/imgcodecs.hpp>
-#include <mve/bundle_io.h>
-#include <mve/scene.h>
-#include <mve/image.h>
-#include <mve/image_io.h>
 
-ImageView::ImageView(std::size_t id,
-                     mve::CameraInfo const &camera,
-                     const std::filesystem::path &image_file)
-    : id(id), image_file(image_file)
+#include <fstream>
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
+
+void ImageView::initializeCameraPos(const math::Vec3f &trans, const math::Matrix3f &rot)
 {
+    pos[0] = -rot[0] * trans[0] - rot[3] * trans[1] - rot[6] * trans[2];
+    pos[1] = -rot[1] * trans[0] - rot[4] * trans[1] - rot[7] * trans[2];
+    pos[2] = -rot[2] * trans[0] - rot[5] * trans[1] - rot[8] * trans[2];
+}
 
-    mve::image::ImageHeaders header;
-    try
-    {
-        header = mve::image::load_file_headers(image_file);
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "Could not load image header of " << image_file << std::endl;
-        std::cerr << e.what() << std::endl;
-        std::exit(EXIT_FAILURE);
-    }
+void ImageView::initializeViewDir(const math::Matrix3f &rot)
+{
+    viewdir[0] = rot[6];
+    viewdir[1] = rot[7];
+    viewdir[2] = rot[8];
+}
 
-    camera.fill_calibration(*projection, header.width, header.height);
-    camera.fill_camera_pos(*pos);
-    camera.fill_viewing_direction(*viewdir);
-    camera.fill_world_to_cam(*world_to_cam);
+void ImageView::initializeWorldToCam(const math::Vec3f &trans, const math::Matrix3f &rot)
+{
+    _world_to_cam[0] = rot[0];
+    _world_to_cam[1] = rot[1];
+    _world_to_cam[2] = rot[2];
+    _world_to_cam[3] = trans[0];
+    _world_to_cam[4] = rot[3];
+    _world_to_cam[5] = rot[4];
+    _world_to_cam[6] = rot[5];
+    _world_to_cam[7] = trans[1];
+    _world_to_cam[8] = rot[6];
+    _world_to_cam[9] = rot[7];
+    _world_to_cam[10] = rot[8];
+    _world_to_cam[11] = trans[2];
+    _world_to_cam[12] = 0.0f;
+    _world_to_cam[13] = 0.0f;
+    _world_to_cam[14] = 0.0f;
+    _world_to_cam[15] = 1.0f;
+}
+
+math::Matrix3f get_rotation_matrix(const math::Vec3f &rotation)
+{
+    float len = rotation.norm();
+    math::Matrix3f K;
+    K[0] = 0;
+    K[1] = -rotation[2] / len;
+    K[2] = rotation[1] / len;
+    K[3] = rotation[2] / len;
+    K[4] = 0;
+    K[5] = -rotation[0] / len;
+    K[6] = -rotation[1] / len;
+    K[7] = rotation[0] / len;
+    K[8] = 0;
+    math::Matrix3f I(0.F);
+    I[0] = 1;
+    I[4] = 1;
+    I[8] = 1;
+    return I + K * sin(len) + K * K * (1 - cos(len));
+}
+
+ImageView::ImageView(std::size_t id, const math::Vec3f &translation,
+                     const math::Vec3f &rotation,
+                     std::shared_ptr<Undistorter> undistorter,
+                     const std::filesystem::path &image_file)
+    : id(id), image_file(image_file), _undistorter(undistorter)
+{
+    math::Matrix3f rotation_matrix = get_rotation_matrix(rotation);
+    initializeCameraPos(translation, rotation_matrix);
+    initializeViewDir(rotation_matrix);
+    initializeWorldToCam(translation, rotation_matrix);
 
     _weight_br = cv::Mat(_tile_width, _tile_width, CV_32F);
-    for (int i = 0; i < _tile_width; i++)
+    for (size_t i = 0; i < _tile_width; i++)
     {
         float y = (i + 0.5) / _tile_width;
-        for (int j = 0; j < _tile_width; j++)
+        for (size_t j = 0; j < _tile_width; j++)
         {
             float x = (j + 0.5) / _tile_width;
             _weight_br.at<float>(i, j) = x * y;
@@ -48,9 +89,9 @@ ImageView::ImageView(std::size_t id,
 
 cv::Point2f ImageView::get_pixel_coords(math::Vec3f const &vertex) const
 {
-    math::Vec3f pixel = projection * world_to_cam.mult(vertex, 1.0f);
-    pixel /= pixel[2];
-    return cv::Point2f(pixel[0] - 0.5f, pixel[1] - 0.5f);
+    math::Vec3f ray_cam = _world_to_cam.mult(vertex, 1.0f);
+    ray_cam /= ray_cam[2];
+    return _undistorter->GetPixelCoords(cv::Point3f(ray_cam[0], ray_cam[1], ray_cam[2]));
 }
 
 std::vector<cv::Point2f> ImageView::get_pixel_coords(const std::vector<math::Vec3f> &vertices) const
@@ -75,6 +116,17 @@ cv::Mat ImageView::GetTile(const std::vector<cv::Point2f> &corners) const
     cv::Mat tile(_tile_width, _tile_width, image.type());
     cv::warpPerspective(image, tile, warp, tile.size());
     return tile;
+}
+
+bool ImageView::IsImageLoaded() const
+{
+    return !image.empty();
+}
+
+
+std::filesystem::path ImageView::ImagePath() const
+{
+    return image_file;
 }
 
 inline float quad_area(const std::vector<cv::Point2f> &corners)
@@ -207,35 +259,71 @@ void ImageView::get_face_info(const std::vector<cv::Point2f> &corners,
     }
 }
 
-std::vector<ImageView> generate_image_views(const std::filesystem::path &nvm_file,
-                                            const std::filesystem::path &tmp_dir)
+std::shared_ptr<Undistorter> create_undistorter_brown(const json &cam)
 {
+    double fx = cam["focal_x"];
+    double fy = cam["focal_y"];
+    double cx = cam["cx"];
+    double cy = cam["cy"];
+    size_t width = cam["width"];
+    size_t height = cam["height"];
+    std::vector<double> dist_coeffs;
+    dist_coeffs.push_back(cam["k1"]);
+    dist_coeffs.push_back(cam["k2"]);
+    dist_coeffs.push_back(cam["p1"]);
+    dist_coeffs.push_back(cam["p2"]);
+    dist_coeffs.push_back(cam["k3"]);
+    return std::make_shared<Undistorter>(fx, fy, cx, cy, width, height, dist_coeffs);
+}
+
+std::shared_ptr<Undistorter> create_undistorter_perspective(const json &cam)
+{
+    double f = cam["focal"];
+    size_t width = cam["width"];
+    size_t height = cam["height"];
+    std::vector<double> dist_coeffs;
+    dist_coeffs.push_back(cam["k1"]);
+    dist_coeffs.push_back(cam["k2"]);
+    dist_coeffs.push_back(0);
+    dist_coeffs.push_back(0);
+    return std::make_shared<Undistorter>(f, f, width / 2.0 - 0.5, height / 2.0 - 0.5, width, height, dist_coeffs);
+}
+
+std::shared_ptr<Undistorter> create_undistorter(const json &cam)
+{
+    if (cam["projection_type"] == "brown")
+    {
+        return create_undistorter_brown(cam);
+    }
+    else if (cam["projection_type"] == "perspective")
+    {
+        return create_undistorter_perspective(cam);
+    }
+    throw std::invalid_argument("invalid projection type");
+}
+
+std::vector<ImageView> generate_image_views(const std::filesystem::path &json_file)
+{
+    std::ifstream f(json_file);
+    json data = json::parse(f);
+
     std::vector<ImageView> image_views;
-    std::vector<mve::NVMCameraInfo> nvm_cams;
-    mve::Bundle::Ptr bundle = mve::load_nvm_bundle(nvm_file, &nvm_cams);
-    mve::Bundle::Cameras &cameras = bundle->get_cameras();
+    std::map<std::string, std::shared_ptr<Undistorter>> undistorters;
 
-    ProgressCounter view_counter("\tLoading", cameras.size());
-#pragma omp parallel for
-#if !defined(_MSC_VER)
-    for (std::size_t i = 0; i < cameras.size(); ++i)
+    for (auto &[key, value] : data[0]["cameras"].items())
     {
-#else
-    for (std::int64_t i = 0; i < cameras.size(); ++i)
+        undistorters[key] = create_undistorter(value);
+    }
+
+    int i = 0;
+    for (auto &[key, value] : data[0]["shots"].items())
     {
-#endif
-        view_counter.progress<SIMPLE>();
-        mve::CameraInfo &mve_cam = cameras[i];
-        mve::NVMCameraInfo const &nvm_cam = nvm_cams[i];
+        math::Vec3f translation(value["translation"][0], value["translation"][1], value["translation"][2]);
+        math::Vec3f rotation(value["rotation"][0], value["rotation"][1], value["rotation"][2]);
+        std::filesystem::path image_path = json_file.parent_path() / std::filesystem::path("images") / key;
+        image_views.push_back(ImageView(i, translation, rotation, undistorters[value["camera"]], image_path));
 
-        cv::Mat image = cv::imread(nvm_cam.filename);
-        int const maxdim = std::max(image.cols, image.rows);
-        mve_cam.flen = mve_cam.flen / static_cast<float>(maxdim);
-
-#pragma omp critical
-        image_views.push_back(ImageView(i, mve_cam, nvm_cam.filename));
-
-        view_counter.inc();
+        i++;
     }
     return image_views;
 }

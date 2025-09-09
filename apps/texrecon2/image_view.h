@@ -8,6 +8,7 @@
 #include <opencv2/imgproc.hpp>
 #include "tex/settings.h"
 #include <mve/camera.h>
+#include "undistorter.h"
 
 struct QuadInfo
 {
@@ -36,8 +37,7 @@ private:
 
     math::Vec3f pos;
     math::Vec3f viewdir;
-    math::Matrix3f projection;
-    math::Matrix4f world_to_cam;
+    math::Matrix4f _world_to_cam;
     std::string image_file;
     cv::Mat image;
 
@@ -45,8 +45,14 @@ private:
     cv::Mat _weight_tr;
     cv::Mat _weight_br;
     cv::Mat _weight_bl;
-    
+
+    std::shared_ptr<Undistorter> _undistorter;
+
     static constexpr size_t _tile_width = 32;
+
+    void initializeCameraPos(const math::Vec3f &trans, const math::Matrix3f &rot);
+    void initializeViewDir(const math::Matrix3f &rot);
+    void initializeWorldToCam(const math::Vec3f &trans, const math::Matrix3f &rot);
 
 public:
     /** Returns the id of the TexureView which is consistent for every run. */
@@ -68,9 +74,16 @@ public:
     bool intersects(const std::vector<cv::Point2f> &corners) const;
 
     /** Constructs a ImageView from the give mve::CameraInfo containing the given image. */
-    ImageView(std::size_t id, mve::CameraInfo const &camera, const std::filesystem::path &image_file);
+    ImageView(std::size_t id, const math::Vec3f &translation,
+              const math::Vec3f &rotation,
+              std::shared_ptr<Undistorter> undistorter,
+              const std::filesystem::path &image_file);
 
     cv::Mat GetTile(const std::vector<cv::Point2f> &corners) const;
+
+    bool IsImageLoaded() const;
+
+    std::filesystem::path ImagePath() const;
 
     /** Returns the position. */
     math::Vec3f get_pos(void) const;
@@ -87,7 +100,6 @@ public:
                        QuadInfo *face_info, tex::Settings const &settings) const;
 };
 
-std::vector<ImageView> generate_image_views(const std::filesystem::path &nvm_file,
-                                            const std::filesystem::path &tmp_dir);
+std::vector<ImageView> generate_image_views(const std::filesystem::path &json_file);
 
 #endif

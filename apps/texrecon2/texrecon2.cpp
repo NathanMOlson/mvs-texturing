@@ -24,7 +24,6 @@
 
 #include "tex/util.h"
 #include "tex/timer.h"
-#include "tex/debug.h"
 #include "tex/texturing.h"
 #include "tex/progress_counter.h"
 
@@ -225,6 +224,11 @@ void calculate_face_projection_infos(const QuadMesh *mesh,
 
             ImageView image_view = image_views.at(k);
             image_view.load_image();
+            if (!image_view.IsImageLoaded())
+            {
+                std::cout << "Failed to load image: " << image_view.ImagePath() << std::endl;
+                continue;
+            }
 
             math::Vec3f const &view_pos = image_view.get_pos();
             math::Vec3f const &viewing_direction = image_view.get_viewing_direction();
@@ -257,9 +261,6 @@ void calculate_face_projection_infos(const QuadMesh *mesh,
                     /* Backface and basic frustum culling */
                     float viewing_angle = face_to_view_vec.dot(face_normal);
                     if (viewing_angle < 0.0f || viewing_direction.dot(view_to_face_vec) < 0.0f)
-                        continue;
-
-                    if (std::acos(viewing_angle) > MATH_DEG2RAD(90.0f))
                         continue;
 
                     /* Projects into the valid part of the ImageView? */
@@ -732,10 +733,10 @@ cv::Mat create_mosaic(std::vector<ImageView> &image_views, const QuadMesh &mesh,
     cv::Mat mosaic = cv::Mat::zeros(labels.rows * tile_width, labels.cols * tile_width, CV_16U);
 
     cv::Mat weight_br(tile_width, tile_width, CV_32F);
-    for (int i = 0; i < tile_width; i++)
+    for (size_t i = 0; i < tile_width; i++)
     {
         float y = (i + 0.5) / tile_width;
-        for (int j = 0; j < tile_width; j++)
+        for (size_t j = 0; j < tile_width; j++)
         {
             float x = (j + 0.5) / tile_width;
             weight_br.at<float>(i, j) = x * y;
@@ -831,8 +832,9 @@ int main(int argc, char **argv)
     std::cout << "Load and prepare mesh: " << std::endl;
     QuadMesh mesh(conf.in_mesh);
 
-    std::cout << "Generating texture views: " << std::endl;
-    std::vector<ImageView> image_views = generate_image_views(conf.in_scene, tmp_dir);
+    std::cout << "Generating image views: " << std::endl;
+    std::vector<ImageView> image_views = generate_image_views(conf.in_scene);
+    std::cout << "Generated " << image_views.size() << " image views" << std::endl;
 
     write_string_to_file(conf.out_prefix + ".conf", conf.to_string());
     timer.measure("Loading");
