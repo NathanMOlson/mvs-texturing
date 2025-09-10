@@ -220,15 +220,24 @@ void ImageView::get_face_info(const std::vector<cv::Point2f> &corners,
     }
     else
     {
+        cv::Mat mask;
+        if (tile.type() == CV_8U)
+        {
+            mask = tile;
+        }
+        else
+        {
+            tile.convertTo(mask, CV_8U);
+        }
         face_info->num_valid_pixels = cv::countNonZero(tile);
         cv::Mat weight_tl, weight_tr, weight_br, weight_bl;
-        _weight_tl.copyTo(weight_tl, tile);
+        _weight_tl.copyTo(weight_tl, mask);
         weight_tl = weight_tl / cv::sum(weight_tl)[0];
-        _weight_tr.copyTo(weight_tr, tile);
+        _weight_tr.copyTo(weight_tr, mask);
         weight_tr = weight_tr / cv::sum(weight_tr)[0];
-        _weight_br.copyTo(weight_br, tile);
+        _weight_br.copyTo(weight_br, mask);
         weight_br = weight_br / cv::sum(weight_br)[0];
-        _weight_bl.copyTo(weight_bl, tile);
+        _weight_bl.copyTo(weight_bl, mask);
         weight_bl = weight_bl / cv::sum(weight_bl)[0];
         face_info->tl = weight_tl.dot(tile_f);
         face_info->tr = weight_tr.dot(tile_f);
