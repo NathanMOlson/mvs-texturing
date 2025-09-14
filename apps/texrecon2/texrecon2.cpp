@@ -891,6 +891,8 @@ int main(int argc, char **argv)
         cv::imwrite(filepath, mosaic);
     }
 
+    std::cout << "Created mosaic at " << filepath << std::endl;
+
     //     /* Remove temporary files. */
     //     for (util::fs::File const & file : util::fs::Directory(tmp_dir)) {
     //         util::fs::unlink(util::fs::join_path(file.path, file.name).c_str());

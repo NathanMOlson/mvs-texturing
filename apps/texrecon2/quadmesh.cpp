@@ -43,18 +43,7 @@ size_t QuadMesh::NumFaceCols() const
 
 math::Vec3f QuadMesh::GetVertex(size_t i, size_t j) const
 {
-    _min_i = std::min((int)i, _min_i);
-    _max_i = std::max((int)i, _max_i);
-    _min_j = std::min((int)j, _min_j);
-    _max_j = std::max((int)j, _max_j);
-
     return math::Vec3f(_geo_transform[0] + j * _geo_transform[1] + i * _geo_transform[2],
                        _geo_transform[3] + j * _geo_transform[4] + i * _geo_transform[5],
                        _image.at<float>(i, j));
-}
-
-QuadMesh::~QuadMesh()
-{
-    std::cout<< "("<<_min_i<<","<<_min_j<<"): " <<GetVertex(_min_i, _min_j)<<std::endl;
-    std::cout<< "("<<_max_i<<","<<_max_j<<"): " <<GetVertex(_max_i, _max_j)<<std::endl;
 }
