@@ -157,7 +157,7 @@ cv::Mat view_selection(DataCosts const &data_costs, const QuadMesh &mesh,
     solver.optimize(solution, ctr);
 
     /* Label 0 is undefined. */
-    std::size_t num_labels = data_costs.rows() + 1;
+    std::size_t num_labels = sqrt(cost_table.size());
     std::size_t undefined = 0;
     /* Extract resulting labeling from solver. */
 
@@ -168,7 +168,7 @@ cv::Mat view_selection(DataCosts const &data_costs, const QuadMesh &mesh,
         {
             size_t k = i * cols + j;
             int label = label_set.label_from_offset(k, solution[k]);
-            if (label < 0 || num_labels <= static_cast<std::size_t>(label))
+            if (label < 0 || label > num_labels)
             {
                 throw std::runtime_error("Incorrect labeling");
             }
@@ -182,18 +182,17 @@ cv::Mat view_selection(DataCosts const &data_costs, const QuadMesh &mesh,
     return labels;
 }
 
-void calculate_face_projection_infos(const QuadMesh *mesh,
-                                     const std::vector<ImageView> &image_views,
-                                     std::vector<std::vector<QuadInfo>> &face_projection_infos)
+std::vector<std::vector<QuadInfo>> calculate_face_projection_infos(const QuadMesh &mesh,
+                                                                   const std::vector<ImageView> &image_views)
 {
-
-    // std::vector<unsigned int> const & faces = mesh->get_faces();
-    // std::vector<math::Vec3f> const & vertices = mesh->get_vertices();
-    // mve::TriangleMesh::NormalList const & face_normals = mesh->get_face_normals();
+    std::vector<std::vector<QuadInfo>> face_projection_infos(mesh.NumFaces());
+    // std::vector<unsigned int> const & faces = mesh.get_faces();
+    // std::vector<math::Vec3f> const & vertices = mesh.get_vertices();
+    // mve::TriangleMesh::NormalList const & face_normals = mesh.get_face_normals();
 
     std::size_t const num_views = image_views.size();
 
-    // std::cout << "\tBuilding BVH from " << mesh->NumFaces() << " faces... " << std::flush;
+    // std::cout << "\tBuilding BVH from " << mesh.NumFaces() << " faces... " << std::flush;
     // BVHTree bvh_tree(faces, vertices);
     // std::cout << "done. (Took: " << timer.get_elapsed() << " ms)" << std::endl;
 
@@ -220,16 +219,16 @@ void calculate_face_projection_infos(const QuadMesh *mesh,
             math::Vec3f const &view_pos = image_view.get_pos();
             math::Vec3f const &viewing_direction = image_view.get_viewing_direction();
 
-            for (std::size_t i = 0; i < mesh->NumFaceRows(); i++)
+            for (std::size_t i = 0; i < mesh.NumFaceRows(); i++)
             {
-                for (std::size_t j = 0; j < mesh->NumFaceCols(); j++)
+                for (std::size_t j = 0; j < mesh.NumFaceCols(); j++)
                 {
-                    std::size_t face_id = i * mesh->NumFaceCols() + j;
+                    std::size_t face_id = i * mesh.NumFaceCols() + j;
                     std::vector<math::Vec3f> corner_points;
-                    math::Vec3f const &v1 = mesh->GetVertex(i, j);
-                    math::Vec3f const &v2 = mesh->GetVertex(i, j + 1);
-                    math::Vec3f const &v3 = mesh->GetVertex(i + 1, j + 1);
-                    math::Vec3f const &v4 = mesh->GetVertex(i + 1, j);
+                    math::Vec3f const &v1 = mesh.GetVertex(i, j);
+                    math::Vec3f const &v2 = mesh.GetVertex(i, j + 1);
+                    math::Vec3f const &v3 = mesh.GetVertex(i + 1, j + 1);
+                    math::Vec3f const &v4 = mesh.GetVertex(i + 1, j);
                     math::Vec3f const &face_normal = math::cross_product(v3 - v1, v2 - v4);
                     math::Vec3f const face_center = (v1 + v2 + v3 + v4) / 4.0f;
 
@@ -293,11 +292,12 @@ void calculate_face_projection_infos(const QuadMesh *mesh,
             projected_face_view_infos.clear();
         }
     }
+    return face_projection_infos;
 }
 
-void postprocess_face_infos(std::vector<std::vector<QuadInfo>> &face_projection_infos,
-                            DataCosts *data_costs)
+DataCosts calculate_data_costs(const QuadMesh &mesh, std::vector<std::vector<QuadInfo>> &face_projection_infos)
 {
+    DataCosts data_costs(mesh.NumFaces());
 #pragma omp parallel for schedule(dynamic)
 #if !defined(_MSC_VER)
     for (std::size_t i = 0; i < face_projection_infos.size(); ++i)
@@ -326,28 +326,10 @@ void postprocess_face_infos(std::vector<std::vector<QuadInfo>> &face_projection_
             {
                 continue;
             }
-            data_costs->set_value(i, info.view_id, 1.0f - info.quality);
+            data_costs.set_value(i, info.view_id, 1.0f - info.quality);
         }
     }
-}
-
-std::vector<std::vector<QuadInfo>>
-calculate_data_costs(const QuadMesh *mesh, const std::vector<ImageView> &image_views,
-                     DataCosts *data_costs)
-{
-
-    std::size_t const num_faces = mesh->NumFaces();
-    std::size_t const num_views = image_views.size();
-
-    if (num_faces > std::numeric_limits<std::uint32_t>::max())
-        throw std::runtime_error("Exeeded maximal number of faces");
-    if (num_views > std::numeric_limits<std::uint16_t>::max())
-        throw std::runtime_error("Exeeded maximal number of views");
-
-    std::vector<std::vector<QuadInfo>> face_projection_infos(num_faces);
-    calculate_face_projection_infos(mesh, image_views, face_projection_infos);
-    postprocess_face_infos(face_projection_infos, data_costs);
-    return face_projection_infos;
+    return data_costs;
 }
 
 cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, const QuadMesh &mesh, cv::Mat &tile_cost)
@@ -826,8 +808,6 @@ int main(int argc, char **argv)
     std::vector<ImageView> image_views = generate_image_views(reconstruction_path);
     std::cout << "Generated " << image_views.size() << " image views" << std::endl;
 
-    std::size_t const num_faces = mesh.NumFaces();
-
     cv::Mat labels;
     cv::Mat adjustments;
     std::vector<std::vector<QuadInfo>> quad_infos;
@@ -836,8 +816,8 @@ int main(int argc, char **argv)
     {
         std::cout << "View selection:" << std::endl;
 
-        DataCosts data_costs(num_faces, image_views.size());
-        quad_infos = calculate_data_costs(&mesh, image_views, &data_costs);
+        quad_infos = calculate_face_projection_infos(mesh, image_views);
+        DataCosts data_costs = calculate_data_costs(mesh, quad_infos);
 
         size_t n_views = image_views.size();
         std::vector<float> pairwise_cost(n_views * n_views, 0);
