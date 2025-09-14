@@ -104,7 +104,7 @@ std::vector<cv::Point2f> ImageView::get_pixel_coords(const std::vector<math::Vec
     return pixels;
 }
 
-cv::Mat ImageView::GetTile(const std::vector<cv::Point2f> &corners) const
+cv::Mat ImageView::GetTile(const std::vector<cv::Point2f> &corners, int interp_type, int border_mode) const
 {
     std::vector<cv::Point2f> tile_corners;
     tile_corners.push_back(cv::Point2f(-0.5, -0.5));
@@ -114,7 +114,7 @@ cv::Mat ImageView::GetTile(const std::vector<cv::Point2f> &corners) const
 
     cv::Mat warp = cv::getPerspectiveTransform(corners, tile_corners);
     cv::Mat tile(_tile_width, _tile_width, image.type());
-    cv::warpPerspective(image, tile, warp, tile.size());
+    cv::warpPerspective(image, tile, warp, tile.size(), interp_type, border_mode);
     return tile;
 }
 
@@ -206,7 +206,7 @@ void ImageView::get_face_info(const std::vector<cv::Point2f> &corners,
     }
 
     float gmi = 0;
-    cv::Mat tile = GetTile(corners);
+    cv::Mat tile = GetTile(corners, cv::INTER_LINEAR, cv::BORDER_REPLICATE);
     cv::Mat tile_f;
     tile.convertTo(tile_f, CV_32F);
 
@@ -217,28 +217,30 @@ void ImageView::get_face_info(const std::vector<cv::Point2f> &corners,
         face_info->tr = _weight_tr.dot(tile_f);
         face_info->br = _weight_br.dot(tile_f);
         face_info->bl = _weight_bl.dot(tile_f);
+        face_info->tl_w = 1;
+        face_info->tr_w = 1;
+        face_info->br_w = 1;
+        face_info->bl_w = 1;
     }
     else
     {
-        cv::Mat mask;
-        if (tile.type() == CV_8U)
+        cv::Mat mask = GetTile(corners, cv::INTER_NEAREST, cv::BORDER_CONSTANT);
+        if (mask.type() != CV_8U)
         {
-            mask = tile;
-        }
-        else
-        {
-            tile.convertTo(mask, CV_8U);
+            mask.convertTo(mask, CV_8U);
         }
         face_info->num_valid_pixels = cv::countNonZero(tile);
         cv::Mat weight_tl, weight_tr, weight_br, weight_bl;
         _weight_tl.copyTo(weight_tl, mask);
-        weight_tl = weight_tl / cv::sum(weight_tl)[0];
         _weight_tr.copyTo(weight_tr, mask);
-        weight_tr = weight_tr / cv::sum(weight_tr)[0];
         _weight_br.copyTo(weight_br, mask);
-        weight_br = weight_br / cv::sum(weight_br)[0];
         _weight_bl.copyTo(weight_bl, mask);
-        weight_bl = weight_bl / cv::sum(weight_bl)[0];
+
+        face_info->tl_w = cv::sum(weight_tl)[0];
+        face_info->tr_w = cv::sum(weight_tr)[0];
+        face_info->br_w = cv::sum(weight_br)[0];
+        face_info->bl_w = cv::sum(weight_bl)[0];
+
         face_info->tl = weight_tl.dot(tile_f);
         face_info->tr = weight_tr.dot(tile_f);
         face_info->br = weight_br.dot(tile_f);
