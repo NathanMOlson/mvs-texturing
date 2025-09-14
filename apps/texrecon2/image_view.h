@@ -6,8 +6,6 @@
 #include "quadmesh.h"
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
-#include "tex/settings.h"
-#include <mve/camera.h>
 #include "undistorter.h"
 
 struct QuadInfo
@@ -20,6 +18,10 @@ struct QuadInfo
     float tr;
     float br;
     float bl;
+    float tl_w;
+    float tr_w;
+    float br_w;
+    float bl_w;
 
     bool operator<(QuadInfo const &other) const
     {
@@ -79,7 +81,7 @@ public:
               std::shared_ptr<Undistorter> undistorter,
               const std::filesystem::path &image_file);
 
-    cv::Mat GetTile(const std::vector<cv::Point2f> &corners) const;
+    cv::Mat GetTile(const std::vector<cv::Point2f> &corners, int interp_type, int border_mode) const;
 
     bool IsImageLoaded() const;
 
@@ -97,7 +99,7 @@ public:
     void release_image(void);
 
     void get_face_info(const std::vector<cv::Point2f> &corners,
-                       QuadInfo *face_info, tex::Settings const &settings) const;
+                       QuadInfo *face_info) const;
 };
 
 std::vector<ImageView> generate_image_views(const std::filesystem::path &json_file);

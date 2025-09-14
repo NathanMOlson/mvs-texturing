@@ -14,31 +14,22 @@
 #include <omp.h>
 #include <set>
 
-#include <util/timer.h>
-#include <util/system.h>
-#include <util/file_system.h>
-#include <mve/mesh_io_ply.h>
 #include <opencv2/imgcodecs.hpp>
 #include <Eigen/SparseCore>
 #include <Eigen/IterativeLinearSolvers>
 
-#include "tex/util.h"
-#include "tex/timer.h"
-#include "tex/texturing.h"
-#include "tex/progress_counter.h"
-
-#include "arguments.h"
-
 #include "mapmap/full.h"
 #include "quadmesh.h"
 #include "image_view.h"
+#include "sparse_table.h"
 
 typedef Eigen::SparseMatrix<float> SpMat;
 typedef Eigen::Triplet<float, int> SpCoeff;
+typedef SparseTable<std::uint32_t, std::uint16_t, float> DataCosts;
 
-cv::Mat view_selection(tex::DataCosts const &data_costs, const QuadMesh &mesh,
+cv::Mat view_selection(DataCosts const &data_costs, const QuadMesh &mesh,
                        const cv::Mat &tile_costs,
-                       const std::vector<float> &cost_table, tex::Settings const &)
+                       const std::vector<float> &cost_table)
 {
     using uint_t = unsigned int;
     using cost_t = float;
@@ -71,7 +62,7 @@ cv::Mat view_selection(tex::DataCosts const &data_costs, const QuadMesh &mesh,
     mapmap::LabelSet<cost_t, simd_w> label_set(mesh.NumFaces(), false);
     for (std::size_t i = 0; i < data_costs.cols(); ++i)
     {
-        tex::DataCosts::Column const &data_costs_for_node = data_costs.col(i);
+        DataCosts::Column const &data_costs_for_node = data_costs.col(i);
 
         std::vector<mapmap::_iv_st<cost_t, simd_w>> labels;
         if (data_costs_for_node.empty())
@@ -107,7 +98,7 @@ cv::Mat view_selection(tex::DataCosts const &data_costs, const QuadMesh &mesh,
 
     for (std::size_t i = 0; i < data_costs.cols(); ++i)
     {
-        tex::DataCosts::Column const &data_costs_for_node = data_costs.col(i);
+        DataCosts::Column const &data_costs_for_node = data_costs.col(i);
 
         std::vector<mapmap::_s_t<cost_t, simd_w>> costs;
         if (data_costs_for_node.empty())
@@ -192,7 +183,7 @@ cv::Mat view_selection(tex::DataCosts const &data_costs, const QuadMesh &mesh,
 }
 
 void calculate_face_projection_infos(const QuadMesh *mesh,
-                                     const std::vector<ImageView> &image_views, tex::Settings const &settings,
+                                     const std::vector<ImageView> &image_views,
                                      std::vector<std::vector<QuadInfo>> &face_projection_infos)
 {
 
@@ -202,12 +193,10 @@ void calculate_face_projection_infos(const QuadMesh *mesh,
 
     std::size_t const num_views = image_views.size();
 
-    util::WallTimer timer;
     // std::cout << "\tBuilding BVH from " << mesh->NumFaces() << " faces... " << std::flush;
     // BVHTree bvh_tree(faces, vertices);
     // std::cout << "done. (Took: " << timer.get_elapsed() << " ms)" << std::endl;
 
-    ProgressCounter view_counter("\tCalculating face qualities", num_views);
 #pragma omp parallel
     {
         std::vector<std::pair<std::size_t, QuadInfo>> projected_face_view_infos;
@@ -220,8 +209,6 @@ void calculate_face_projection_infos(const QuadMesh *mesh,
         for (std::int32_t k = 0; k < num_views; ++k)
         {
 #endif
-            view_counter.progress<SIMPLE>();
-
             ImageView image_view = image_views.at(k);
             image_view.load_image();
             if (!image_view.IsImageLoaded())
@@ -280,7 +267,7 @@ void calculate_face_projection_infos(const QuadMesh *mesh,
 
                     QuadInfo info = {k, 0.0f, false};
 
-                    image_view.get_face_info(corner_pixels, &info, settings);
+                    image_view.get_face_info(corner_pixels, &info);
 
                     if (info.quality <= 0.0)
                         continue;
@@ -291,7 +278,6 @@ void calculate_face_projection_infos(const QuadMesh *mesh,
             }
 
             image_view.release_image();
-            view_counter.inc();
         }
 
         // std::sort(projected_face_view_infos.begin(), projected_face_view_infos.end());
@@ -309,13 +295,9 @@ void calculate_face_projection_infos(const QuadMesh *mesh,
     }
 }
 
-void postprocess_face_infos(tex::Settings const &settings,
-                            std::vector<std::vector<QuadInfo>> &face_projection_infos,
-                            tex::DataCosts *data_costs)
+void postprocess_face_infos(std::vector<std::vector<QuadInfo>> &face_projection_infos,
+                            DataCosts *data_costs)
 {
-
-    ProgressCounter face_counter("\tPostprocessing face infos",
-                                 face_projection_infos.size());
 #pragma omp parallel for schedule(dynamic)
 #if !defined(_MSC_VER)
     for (std::size_t i = 0; i < face_projection_infos.size(); ++i)
@@ -324,7 +306,6 @@ void postprocess_face_infos(tex::Settings const &settings,
     for (std::int64_t i = 0; i < face_projection_infos.size(); ++i)
     {
 #endif
-        face_counter.progress<SIMPLE>();
 
         std::vector<QuadInfo> &infos = face_projection_infos.at(i);
         // if (settings.outlier_removal != OUTLIER_REMOVAL_NONE) {
@@ -335,8 +316,6 @@ void postprocess_face_infos(tex::Settings const &settings,
         //         infos.end());
         // }
         std::sort(infos.begin(), infos.end());
-
-        face_counter.inc();
     }
 
     for (std::uint32_t i = 0; i < face_projection_infos.size(); ++i)
@@ -354,7 +333,7 @@ void postprocess_face_infos(tex::Settings const &settings,
 
 std::vector<std::vector<QuadInfo>>
 calculate_data_costs(const QuadMesh *mesh, const std::vector<ImageView> &image_views,
-                     tex::Settings const &settings, tex::DataCosts *data_costs)
+                     DataCosts *data_costs)
 {
 
     std::size_t const num_faces = mesh->NumFaces();
@@ -366,8 +345,8 @@ calculate_data_costs(const QuadMesh *mesh, const std::vector<ImageView> &image_v
         throw std::runtime_error("Exeeded maximal number of views");
 
     std::vector<std::vector<QuadInfo>> face_projection_infos(num_faces);
-    calculate_face_projection_infos(mesh, image_views, settings, face_projection_infos);
-    postprocess_face_infos(settings, face_projection_infos, data_costs);
+    calculate_face_projection_infos(mesh, image_views, face_projection_infos);
+    postprocess_face_infos(face_projection_infos, data_costs);
     return face_projection_infos;
 }
 
@@ -375,6 +354,13 @@ cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, 
 {
     cv::Mat labels = cv::Mat::zeros(mesh.NumFaceRows(), mesh.NumFaceCols(), CV_16U);
     tile_cost = cv::Mat::ones(mesh.NumFaceRows(), mesh.NumFaceCols(), CV_32F);
+
+    cv::Mat b[17];
+
+    for (cv::Mat &img : b)
+    {
+        img = cv::Mat::zeros(labels.rows * 2, labels.cols * 2, CV_16U);
+    }
 
     for (int i = 0; i < labels.rows; i++)
     {
@@ -386,6 +372,10 @@ cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, 
 
             for (const QuadInfo &quad_info : quad_infos[index])
             {
+                b[quad_info.view_id].at<uint16_t>(2 * i, 2 * j) = quad_info.tl / quad_info.tl_w;
+                b[quad_info.view_id].at<uint16_t>(2 * i, 2 * j + 1) = quad_info.tr / quad_info.tr_w;
+                b[quad_info.view_id].at<uint16_t>(2 * i + 1, 2 * j + 1) = quad_info.br / quad_info.br_w;
+                b[quad_info.view_id].at<uint16_t>(2 * i + 1, 2 * j) = quad_info.bl / quad_info.bl_w;
                 if (quad_info.num_valid_pixels > num_valid || (quad_info.num_valid_pixels == num_valid && quad_info.quality > q))
                 {
                     q = quad_info.quality;
@@ -396,13 +386,19 @@ cv::Mat best_local_labels(const std::vector<std::vector<QuadInfo>> &quad_infos, 
             }
         }
     }
+
+    for (int i = 0; i < 17; i++)
+    {
+        imwrite(std::to_string(i) + ".png", b[i]);
+    }
+
     return labels;
 }
 
 float calculate_difference(const std::vector<std::vector<QuadInfo>> &quad_infos, cv::Size mesh_size, int row, int col, uint16_t label, uint16_t label2)
 {
-    int n1 = 0;
-    int n2 = 0;
+    float n1 = 0;
+    float n2 = 0;
     float m1 = 0;
     float m2 = 0;
 
@@ -414,12 +410,12 @@ float calculate_difference(const std::vector<std::vector<QuadInfo>> &quad_infos,
             if (quad_info.view_id == label - 1)
             {
                 m1 += quad_info.br;
-                n1++;
+                n1 += quad_info.br_w;
             }
             else if (quad_info.view_id == label2 - 1)
             {
                 m2 += quad_info.br;
-                n2++;
+                n2 += quad_info.br_w;
             }
         }
     }
@@ -432,12 +428,12 @@ float calculate_difference(const std::vector<std::vector<QuadInfo>> &quad_infos,
             if (quad_info.view_id == label - 1)
             {
                 m1 += quad_info.bl;
-                n1++;
+                n1 += quad_info.bl_w;
             }
             else if (quad_info.view_id == label2 - 1)
             {
                 m2 += quad_info.bl;
-                n2++;
+                n2 += quad_info.bl_w;
             }
         }
     }
@@ -450,12 +446,12 @@ float calculate_difference(const std::vector<std::vector<QuadInfo>> &quad_infos,
             if (quad_info.view_id == label - 1)
             {
                 m1 += quad_info.tr;
-                n1++;
+                n1 += quad_info.tr_w;
             }
             else if (quad_info.view_id == label2 - 1)
             {
                 m2 += quad_info.tr;
-                n2++;
+                n2 += quad_info.tr_w;
             }
         }
     }
@@ -468,12 +464,12 @@ float calculate_difference(const std::vector<std::vector<QuadInfo>> &quad_infos,
             if (quad_info.view_id == label - 1)
             {
                 m1 += quad_info.tl;
-                n1++;
+                n1 += quad_info.tl_w;
             }
             else if (quad_info.view_id == label2 - 1)
             {
                 m2 += quad_info.tl;
-                n2++;
+                n2 += quad_info.tl_w;
             }
         }
     }
@@ -684,7 +680,6 @@ cv::Mat global_seam_leveling(const cv::Mat &labels, const std::vector<std::vecto
     std::cout << " done." << std::endl;
     std::cout << "\tLhs dimensionality: " << Lhs.rows() << " x " << Lhs.cols() << std::endl;
 
-    util::WallTimer timer;
     std::cout << "\tCalculating adjustments:" << std::endl;
     /* Prepare solver. */
     Eigen::ConjugateGradient<SpMat, Eigen::Lower> cg;
@@ -767,7 +762,7 @@ cv::Mat create_mosaic(std::vector<ImageView> &image_views, const QuadMesh &mesh,
 
                     std::vector<cv::Point2f> corner_pixels = image_views[k].get_pixel_coords(corner_points);
 
-                    cv::Mat tile = image_views[k].GetTile(corner_pixels);
+                    cv::Mat tile = image_views[k].GetTile(corner_pixels, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
 
                     cv::Mat adjustment = adjustments.at<float>(2 * i, 2 * j) * weight_tl +
                                          adjustments.at<float>(2 * i, 2 * j + 1) * weight_tr +
@@ -785,35 +780,29 @@ cv::Mat create_mosaic(std::vector<ImageView> &image_views, const QuadMesh &mesh,
 
 int main(int argc, char **argv)
 {
-    util::system::print_build_timestamp(argv[0]);
-    util::system::register_segfault_handler();
-
-    Timer timer;
-    util::WallTimer wtimer;
-
-    Arguments conf;
-    try
+    if (argc != 4)
     {
-        conf = parse_args(argc, argv);
+        std::cout << "Usage: " << argv[0] << " <reconstruction file (.json)> <dem file (.tiff)> <output prefix>" << std::endl;
+        return -1;
     }
-    catch (std::invalid_argument &ia)
+    const std::filesystem::path reconstruction_path(argv[1]);
+    const std::filesystem::path dem_path(argv[2]);
+    const std::filesystem::path out_prefix(argv[3]);
+    const std::filesystem::path out_dir = out_prefix.parent_path();
+
+    const std::filesystem::path labeling_file;
+    const bool write_intermediate_results = false;
+
+    if (!std::filesystem::is_directory(out_dir))
     {
-        std::cerr << ia.what() << std::endl;
+        std::cerr << "Destination directory \"" << out_dir << "\" does not exist!" << std::endl;
         std::exit(EXIT_FAILURE);
     }
 
-    std::string const out_dir = util::fs::dirname(conf.out_prefix);
-
-    if (!util::fs::dir_exists(out_dir.c_str()))
+    const std::filesystem::path tmp_dir = out_dir / "tmp";
+    if (!std::filesystem::is_directory(tmp_dir))
     {
-        std::cerr << "Destination directory does not exist!" << std::endl;
-        std::exit(EXIT_FAILURE);
-    }
-
-    std::string const tmp_dir = util::fs::join_path(out_dir, "tmp");
-    if (!util::fs::dir_exists(tmp_dir.c_str()))
-    {
-        util::fs::mkdir(tmp_dir.c_str());
+        std::filesystem::create_directory(tmp_dir);
     }
     else
     {
@@ -821,23 +810,21 @@ int main(int argc, char **argv)
     }
 
     // Set the number of threads to use.
-    tbb::task_arena arena(conf.num_threads > 0 ? conf.num_threads : tbb::this_task_arena::max_concurrency());
+    const int num_threads = -1;
+    tbb::task_arena arena(num_threads > 0 ? num_threads : tbb::this_task_arena::max_concurrency());
 
-    if (conf.num_threads > 0)
+    if (num_threads > 0)
     {
         omp_set_dynamic(0);
-        omp_set_num_threads(conf.num_threads);
+        omp_set_num_threads(num_threads);
     }
 
     std::cout << "Load and prepare mesh: " << std::endl;
-    QuadMesh mesh(conf.in_mesh);
+    QuadMesh mesh(dem_path);
 
     std::cout << "Generating image views: " << std::endl;
-    std::vector<ImageView> image_views = generate_image_views(conf.in_scene);
+    std::vector<ImageView> image_views = generate_image_views(reconstruction_path);
     std::cout << "Generated " << image_views.size() << " image views" << std::endl;
-
-    write_string_to_file(conf.out_prefix + ".conf", conf.to_string());
-    timer.measure("Loading");
 
     std::size_t const num_faces = mesh.NumFaces();
 
@@ -845,39 +832,12 @@ int main(int argc, char **argv)
     cv::Mat adjustments;
     std::vector<std::vector<QuadInfo>> quad_infos;
 
-    if (conf.labeling_file.empty())
+    if (labeling_file.empty())
     {
         std::cout << "View selection:" << std::endl;
-        util::WallTimer rwtimer;
 
-        tex::DataCosts data_costs(num_faces, image_views.size());
-        if (conf.data_cost_file.empty())
-        {
-            quad_infos = calculate_data_costs(&mesh, image_views, conf.settings, &data_costs);
-
-            if (conf.write_intermediate_results)
-            {
-                std::cout << "\tWriting data cost file... " << std::flush;
-                tex::DataCosts::save_to_file(data_costs, conf.out_prefix + "_data_costs.spt");
-                std::cout << "done." << std::endl;
-            }
-        }
-        else
-        {
-            std::cout << "\tLoading data cost file... " << std::flush;
-            try
-            {
-                tex::DataCosts::load_from_file(conf.data_cost_file, &data_costs);
-            }
-            catch (util::FileException e)
-            {
-                std::cout << "failed!" << std::endl;
-                std::cerr << e.what() << std::endl;
-                std::exit(EXIT_FAILURE);
-            }
-            std::cout << "done." << std::endl;
-        }
-        timer.measure("Calculating data costs");
+        DataCosts data_costs(num_faces, image_views.size());
+        quad_infos = calculate_data_costs(&mesh, image_views, &data_costs);
 
         size_t n_views = image_views.size();
         std::vector<float> pairwise_cost(n_views * n_views, 0);
@@ -892,18 +852,29 @@ int main(int argc, char **argv)
 
         cv::Mat tile_cost;
         labels = best_local_labels(quad_infos, mesh, tile_cost);
-        cv::Mat img;
-        cv::normalize(tile_cost, img, 255, 0, cv::NORM_MINMAX, CV_8U);
-        cv::imwrite(conf.out_prefix + "_edge_cost.png", img);
+        if (write_intermediate_results)
+        {
+            cv::Mat img;
+            cv::normalize(tile_cost, img, 255, 0, cv::NORM_MINMAX, CV_8U);
+            std::filesystem::path filepath = out_prefix;
+            filepath += "_edge_cost.png";
+            cv::imwrite(filepath, img);
+        }
 
         try
         {
-            labels = view_selection(data_costs, mesh, tile_cost, pairwise_cost, conf.settings);
+            labels = view_selection(data_costs, mesh, tile_cost, pairwise_cost);
             adjustments = global_seam_leveling(labels, quad_infos);
 
-            img = adjustments + 128;
-            img.convertTo(img, CV_8U);
-            cv::imwrite(conf.out_prefix + "_adjustments.png", img);
+            if (write_intermediate_results)
+            {
+                cv::Mat img;
+                img = adjustments + 128;
+                img.convertTo(img, CV_8U);
+                std::filesystem::path filepath = out_prefix;
+                filepath += "_adjustments.png";
+                cv::imwrite(filepath, img);
+            }
 
             // labels = best_local_labels(quad_infos, mesh);
         }
@@ -912,110 +883,33 @@ int main(int argc, char **argv)
             std::cerr << "\tOptimization failed: " << e.what() << std::endl;
             std::exit(EXIT_FAILURE);
         }
-        timer.measure("Running MRF optimization");
-        std::cout << "\tTook: " << rwtimer.get_elapsed_sec() << "s" << std::endl;
 
         /* Write labeling to file. */
-        if (conf.write_intermediate_results)
+        if (write_intermediate_results)
         {
-            cv::imwrite(conf.out_prefix + "_labeling.png", labels);
+            std::filesystem::path filepath = out_prefix;
+            filepath += "_labeling.png";
+            cv::imwrite(filepath, labels);
         }
     }
     else
     {
-        labels = cv::imread(conf.labeling_file, cv::IMREAD_ANYDEPTH);
+        labels = cv::imread(labeling_file, cv::IMREAD_ANYDEPTH);
     }
 
     cv::Mat mosaic = create_mosaic(image_views, mesh, labels, adjustments);
-    cv::imwrite(conf.out_prefix + "_mosaic.png", mosaic);
+    std::filesystem::path filepath = out_prefix;
+    filepath += "_mosaic.png";
+    cv::imwrite(filepath, mosaic);
 
-    adjustments = 0;
-    mosaic = create_mosaic(image_views, mesh, labels, adjustments);
-    cv::imwrite(conf.out_prefix + "_mosaic_unadjusted.png", mosaic);
-
-    //     tex::TextureAtlases texture_atlases;
-    //     {
-    //         /* Create texture patches and adjust them. */
-    //         tex::TexturePatches texture_patches;
-    //         tex::VertexProjectionInfos vertex_projection_infos;
-    //         std::cout << "Generating texture patches:" << std::endl;
-    //         tex::generate_texture_patches(graph, mesh, mesh_info, &image_views,
-    //             conf.settings, &vertex_projection_infos, &texture_patches);
-
-    //         if (conf.settings.global_seam_leveling) {
-    //             std::cout << "Running global seam leveling:" << std::endl;
-    //             tex::global_seam_leveling(graph, mesh, mesh_info, vertex_projection_infos, &texture_patches);
-    //             timer.measure("Running global seam leveling");
-    //         } else {
-    //             ProgressCounter texture_patch_counter("Calculating validity masks for texture patches", texture_patches.size());
-    //             #pragma omp parallel for schedule(dynamic)
-    // #if !defined(_MSC_VER)
-    //             for (std::size_t i = 0; i < texture_patches.size(); ++i) {
-    // #else
-    //             for (std::int64_t i = 0; i < texture_patches.size(); ++i) {
-    // #endif
-    //                 texture_patch_counter.progress<SIMPLE>();
-    //                 TexturePatch::Ptr texture_patch = texture_patches[i];
-    //                 std::vector<math::Vec3f> patch_adjust_values(texture_patch->get_faces().size() * 3, math::Vec3f(0.0f));
-    //                 texture_patch->adjust_colors(patch_adjust_values);
-    //                 texture_patch_counter.inc();
-    //             }
-    //             timer.measure("Calculating texture patch validity masks");
-    //         }
-
-    //         if (conf.settings.local_seam_leveling) {
-    //             std::cout << "Running local seam leveling:" << std::endl;
-    //             tex::local_seam_leveling(graph, mesh, vertex_projection_infos, &texture_patches);
-    //         }
-    //         timer.measure("Running local seam leveling");
-
-    //         /* Generate texture atlases. */
-    //         std::cout << "Generating texture atlases:" << std::endl;
-
-    //         bool grayscale = image_views.front().is_grayscale();
-    //         tex::generate_texture_atlases(&texture_patches, conf.settings, &texture_atlases, type, grayscale);
-    //     }
-
-    //     /* Create and write out obj model. */
-    //     {
-    //         std::cout << "Building objmodel:" << std::endl;
-    //         tex::Model model;
-    //         tex::build_model(mesh, texture_atlases, &model);
-    //         timer.measure("Building OBJ model");
-
-    //         std::cout << "\tSaving model... " << std::flush;
-    //         tex::Model::save(model, conf.out_prefix);
-    //         std::cout << "done." << std::endl;
-    //         timer.measure("Saving");
-    //     }
-
-    //     std::cout << "Whole texturing procedure took: " << wtimer.get_elapsed_sec() << "s" << std::endl;
-    //     timer.measure("Total");
-    //     if (conf.write_timings) {
-    //         timer.write_to_file(conf.out_prefix + "_timings.csv");
-    //     }
-
-    //     if (conf.write_view_selection_model) {
-    //         texture_atlases.clear();
-    //         std::cout << "Generating debug texture patches:" << std::endl;
-    //         {
-    //             tex::TexturePatches texture_patches;
-    //             generate_debug_embeddings(&image_views);
-    //             tex::VertexProjectionInfos vertex_projection_infos; // Will only be written
-    //             tex::generate_texture_patches(graph, mesh, mesh_info, &image_views,
-    //                 conf.settings, &vertex_projection_infos, &texture_patches);
-    //             tex::generate_texture_atlases(&texture_patches, conf.settings, &texture_atlases, type, false);
-    //         }
-
-    //         std::cout << "Building debug objmodel:" << std::endl;
-    //         {
-    //             tex::Model model;
-    //             tex::build_model(mesh, texture_atlases, &model);
-    //             std::cout << "\tSaving model... " << std::flush;
-    //             tex::Model::save(model, conf.out_prefix + "_view_selection");
-    //             std::cout << "done." << std::endl;
-    //         }
-    //     }
+    if (write_intermediate_results)
+    {
+        adjustments = 0;
+        mosaic = create_mosaic(image_views, mesh, labels, adjustments);
+        std::filesystem::path filepath = out_prefix;
+        filepath += "_mosaic_unadjusted.png";
+        cv::imwrite(filepath, mosaic);
+    }
 
     //     /* Remove temporary files. */
     //     for (util::fs::File const & file : util::fs::Directory(tmp_dir)) {

@@ -192,7 +192,7 @@ void ImageView::release_image(void)
 }
 
 void ImageView::get_face_info(const std::vector<cv::Point2f> &corners,
-                              QuadInfo *face_info, tex::Settings const &settings) const
+                              QuadInfo *face_info) const
 {
     assert(!image.empty());
     face_info->fully_visible = inside(corners);
@@ -246,27 +246,17 @@ void ImageView::get_face_info(const std::vector<cv::Point2f> &corners,
         face_info->br = weight_br.dot(tile_f);
         face_info->bl = weight_bl.dot(tile_f);
     }
-    if (settings.data_term == tex::DATA_TERM_GMI)
-    {
-        cv::Mat grad_x;
-        cv::Mat grad_y;
-        cv::Sobel(tile, grad_x, CV_32F, 1, 0);
-        cv::Sobel(tile, grad_y, CV_32F, 0, 1);
-        cv::multiply(grad_x, grad_x, grad_x);
-        cv::multiply(grad_y, grad_y, grad_y);
-        // cv::sqrt(grad_x + grad_y, grad_x);
-        gmi = cv::mean(1 - 1 / ((grad_x + grad_y) / 32 + 1))[0];
-    }
 
-    switch (settings.data_term)
-    {
-    case tex::DATA_TERM_AREA:
-        face_info->quality = area;
-        break;
-    case tex::DATA_TERM_GMI:
-        face_info->quality = gmi;
-        break;
-    }
+    cv::Mat grad_x;
+    cv::Mat grad_y;
+    cv::Sobel(tile, grad_x, CV_32F, 1, 0);
+    cv::Sobel(tile, grad_y, CV_32F, 0, 1);
+    cv::multiply(grad_x, grad_x, grad_x);
+    cv::multiply(grad_y, grad_y, grad_y);
+    // cv::sqrt(grad_x + grad_y, grad_x);
+    gmi = cv::mean(1 - 1 / ((grad_x + grad_y) / 32 + 1))[0];
+
+    face_info->quality = gmi;
 }
 
 std::shared_ptr<Undistorter> create_undistorter_brown(const json &cam)
